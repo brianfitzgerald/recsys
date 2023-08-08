@@ -13,13 +13,13 @@ torch.manual_seed(0)
 
 
 class Recommender(nn.Module):
-    def __init__(self, n_users, n_items, layers=[16, 8]):
+    def __init__(self, n_users, n_movies, layers=[16, 8]):
         super().__init__()
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
         embedding_dim = int(layers[0] / 2)
         self.user_embedding = nn.Embedding(n_users, embedding_dim)
-        self.item_embedding = nn.Embedding(n_items, embedding_dim)
+        self.movie_embedding = nn.Embedding(n_movies, embedding_dim)
 
         self.fc_layers = torch.nn.ModuleList()
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
@@ -30,7 +30,7 @@ class Recommender(nn.Module):
 
     def forward(self, users, items):
         user_embedding = self.user_embedding(users)
-        item_embedding = self.item_embedding(items)
+        item_embedding = self.movie_embedding(items)
         x = torch.cat([user_embedding, item_embedding], 1)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
@@ -47,11 +47,17 @@ class RecommenderModule(pl.LightningModule):
         self.loss_fn = torch.nn.BCEWithLogitsLoss()
 
     def training_step(self, batch):
-        users = batch[0]
-        items = batch[1]
-        ratings = batch[2]
+        users, items, ratings = batch
         preds = self.recommender(users, items)
         loss = self.loss_fn(preds.squeeze(1), ratings)
+        self.log("train_loss", loss, prog_bar=True)
+        return loss
+
+    def test_step(self, batch):
+        users, items, ratings = batch
+        preds = self.recommender(users, items)
+        loss = self.loss_fn(preds.squeeze(1), ratings)
+        self.log("test_loss", loss, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
@@ -66,12 +72,12 @@ no_users, no_movies = dataset.no_movies, dataset.no_users
 train_dataset, test_dataset = torch.utils.data.random_split(
     dataset, [train_size, test_size]
 )
-train_dataloader = DataLoader(train_dataset, batch_size=48, num_workers=30)
-val_dataloader = DataLoader(test_dataset, batch_size=48, num_workers=30)
-model = RecommenderModule(Recommender(no_users, no_movies))
+train_dataloader = DataLoader(train_dataset, batch_size=2048, num_workers=30)
+val_dataloader = DataLoader(test_dataset, batch_size=2048, num_workers=30)
+model = RecommenderModule(Recommender(no_movies, no_users))
 trainer = pl.Trainer()
 # tuner = Tuner(trainer)
 # tuner.scale_batch_size(model, mode="power")
 trainer.fit(
-    model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
+    model=model, train_dataloaders=train_dataloader
 )
