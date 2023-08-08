@@ -6,6 +6,8 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from lightning.pytorch.tuner import Tuner
 
+from dataset import MovieLens20MDataset
+
 
 torch.manual_seed(0)
 
@@ -45,11 +47,11 @@ class RecommenderModule(pl.LightningModule):
         self.loss_fn = torch.nn.BCEWithLogitsLoss()
 
     def training_step(self, batch):
-        users = batch["user_id"]
-        items = batch["movie_id"]
-        rating = batch["rating"]
+        users = batch[0]
+        items = batch[1]
+        ratings = batch[2]
         preds = self.recommender(users, items)
-        loss = self.loss_fn(preds.squeeze(1), rating)
+        loss = self.loss_fn(preds.squeeze(1), ratings)
         return loss
 
     def configure_optimizers(self):
@@ -57,12 +59,19 @@ class RecommenderModule(pl.LightningModule):
         return optimizer
 
 
-dataset = load_dataset("ashraq/movielens_ratings")
-train_dataloader = DataLoader(dataset["train"], batch_size=48)
-n_users = max(dataset["train"]["user_id"])
-n_movies = max(dataset["train"]["movie_id"])
-model = RecommenderModule(Recommender(n_users, n_movies))
-trainer = pl.Trainer(precision=16)
+dataset = MovieLens20MDataset("ml-25m/ratings.csv")
+train_size = int(0.8 * len(dataset))
+test_size = len(dataset) - train_size
+no_users, no_movies = dataset.no_movies, dataset.no_users
+train_dataset, test_dataset = torch.utils.data.random_split(
+    dataset, [train_size, test_size]
+)
+train_dataloader = DataLoader(train_dataset, batch_size=48, num_workers=30)
+val_dataloader = DataLoader(test_dataset, batch_size=48, num_workers=30)
+model = RecommenderModule(Recommender(no_users, no_movies))
+trainer = pl.Trainer()
 # tuner = Tuner(trainer)
 # tuner.scale_batch_size(model, mode="power")
-trainer.fit(model=model, train_dataloaders=train_dataloader)
+trainer.fit(
+    model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
+)
