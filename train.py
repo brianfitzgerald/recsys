@@ -26,7 +26,8 @@ class Recommender(nn.Module):
             self.fc_layers.append(torch.nn.Linear(in_size, out_size))
 
         # 1 is the output dimension
-        self.output_layer = torch.nn.Linear(layers[-1], 1)
+        self.last_linear = torch.nn.Linear(layers[-1], 1)
+        self.output = torch.nn.Sigmoid()
 
     def forward(self, users, items):
         user_embedding = self.user_embedding(users)
@@ -36,15 +37,16 @@ class Recommender(nn.Module):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
             x = F.dropout(x)
-        logit = self.output_layer(x)
-        return logit
+        logit = self.last_linear(x)
+        output = self.output(logit)
+        return output
 
 
 class RecommenderModule(pl.LightningModule):
     def __init__(self, recommender: Recommender):
         super().__init__()
         self.recommender = recommender
-        self.loss_fn = torch.nn.BCEWithLogitsLoss()
+        self.loss_fn = torch.nn.CrossEntropyLoss()
 
     def training_step(self, batch):
         users, items, ratings = batch
@@ -72,8 +74,8 @@ no_users, no_movies = dataset.no_movies, dataset.no_users
 train_dataset, test_dataset = torch.utils.data.random_split(
     dataset, [train_size, test_size]
 )
-train_dataloader = DataLoader(train_dataset, batch_size=2048, num_workers=30)
-val_dataloader = DataLoader(test_dataset, batch_size=2048, num_workers=30)
+train_dataloader = DataLoader(train_dataset, batch_size=256, num_workers=30)
+val_dataloader = DataLoader(test_dataset, batch_size=256, num_workers=30)
 model = RecommenderModule(Recommender(no_movies, no_users))
 trainer = pl.Trainer()
 # tuner = Tuner(trainer)
