@@ -157,3 +157,4 @@ nohup.out
 lightning_logs
 ratings.csv
 ml-25m
+*.zip
