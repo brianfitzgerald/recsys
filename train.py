@@ -1,12 +1,8 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-import lightning.pytorch as pl
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from lightning.pytorch.tuner import Tuner
-from lightning.pytorch.loggers.wandb import WandbLogger
-from lightning.pytorch.loggers import CSVLogger
 import torchvision.transforms as transforms
 import fire
 
@@ -47,34 +43,32 @@ class Recommender(nn.Module):
         return rating
 
 
-class RecommenderModule(pl.LightningModule):
+class RecommenderModule(nn.Module):
     def __init__(self, recommender: Recommender):
         super().__init__()
         self.recommender = recommender
         self.loss_fn = torch.nn.MSELoss()
-        self.save_hyperparameters()
 
     def training_step(self, batch):
         users, items, ratings = batch
         preds = self.recommender(users, items).squeeze(1)
         ratings = ratings / 5
         loss = self.loss_fn(preds, ratings)
-        self.log("train_loss", loss, prog_bar=True)
-        return loss
+        return loss.float()
 
-    def test_step(self, batch):
-        users, items, ratings = batch
-        preds = self.recommender(users, items).squeeze(1)
-        ratings = ratings / 5
-        loss = self.loss_fn(preds, ratings)
-        self.log("valid_loss", loss, prog_bar=True)
-        return loss
+    def eval_step(self, batch):
+        with torch.no_grad():
+            users, items, ratings = batch
+            preds = self.recommender(users, items).squeeze(1)
+            ratings = ratings / 5
+            loss = self.loss_fn(preds, ratings)
+            return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters())
         return optimizer
 
-def main(use_wandb: bool = False):
+def main(use_wandb: bool = False, num_epochs: int = 5000, eval_every: int = 10):
 
     dataset = MovieLens20MDataset("ml-25m/ratings.csv")
     train_size = int(0.8 * len(dataset))
@@ -86,16 +80,29 @@ def main(use_wandb: bool = False):
     train_dataloader = DataLoader(train_dataset, batch_size=512)
     val_dataloader = DataLoader(test_dataset, batch_size=512)
     model = RecommenderModule(Recommender(no_movies, no_users))
-    logger = None
-    if use_wandb:
-        logger = WandbLogger(project="recsys")
-        logger.watch(model)
-    else:
-        logger = None
-    trainer = pl.Trainer(logger=logger, precision=64)
-    trainer.fit(
-        model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-6)
+    for i in range(num_epochs):
+        for j, batch in enumerate(train_dataloader):
+            loss = model.training_step(batch)
+            loss.backward()
+            grads = [
+                param.grad.detach().flatten()
+                for param in model.parameters()
+                if param.grad is not None
+            ]
+            total_norm = torch.cat(grads).norm()
+
+            print("Total norm: ", total_norm)
+            print(f"Epoch {i}, batch {j}, loss {loss.item()}, total norm: {total_norm}")
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 100)
+            optimizer.step()
+        if i % eval_every == 0:
+            print("Running eval..")
+            for j, batch in enumerate(val_dataloader):
+                eval_loss = model.eval_step(batch, i)
+                print(f"Eval loss for batch {j}: {eval_loss.item()}")
+
 
 if __name__ == "__main__":
     fire.Fire(main)

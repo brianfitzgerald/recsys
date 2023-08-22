@@ -19,11 +19,11 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         data = pd.read_csv(dataset_path, sep=sep, engine=engine, header=header).to_numpy()[:, :3]
         self.user_ids = data[:, 0].astype(np.int)
         self.movie_ids = data[:, 1].astype(np.int)
-        self.ratings = data[:, 2]
+        self.ratings = data[:, 2].astype(np.float32)
         self.no_users = np.max(self.user_ids) + 1
         self.no_movies = np.max(self.movie_ids) + 1
-        self.user_field_idx = np.array((0, ), dtype=np.long)
-        self.item_field_idx = np.array((1,), dtype=np.long)
+        self.user_field_idx = np.array((0, ), dtype=np.int)
+        self.item_field_idx = np.array((1,), dtype=np.int)
 
     def __len__(self):
         return self.movie_ids.shape[0]
