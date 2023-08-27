@@ -1,6 +1,7 @@
 ## Recommmender system playground
 
 https://github.com/HarshdeepGupta/recommender_pytorch
+specifically, https://github.com/HarshdeepGupta/recommender_pytorch/blob/master/MLP.py
 
 ```
 wget https://files.grouplens.org/datasets/movielens/ml-25m.zip
