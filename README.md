@@ -3,6 +3,10 @@
 https://github.com/HarshdeepGupta/recommender_pytorch
 specifically, https://github.com/HarshdeepGupta/recommender_pytorch/blob/master/MLP.py
 
+https://medium.com/towards-data-science/recommender-systems-using-deep-learning-in-pytorch-from-scratch-f661b8f391d7
+
+paper - https://arxiv.org/abs/1708.05031
+
 ```
 wget https://files.grouplens.org/datasets/movielens/ml-25m.zip
 unzip ml-25m.zip

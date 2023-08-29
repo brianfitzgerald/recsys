@@ -8,7 +8,7 @@ import torchvision.transforms as transforms
 import fire
 import wandb
 
-from dataset import MovieLens20MDataset
+from dataset import MovieLens20MDataset, RatingFormat
 
 
 torch.manual_seed(0)
@@ -20,10 +20,11 @@ class Params:
     dropout: float = 0.2
     batch_size: int = 2048
     weight_decay: float = 1e-5
+    rating_format: RatingFormat = RatingFormat.BINARY
 
 
 class Recommender(nn.Module):
-    def __init__(self, n_users, n_movies, layers=[16, 8], dropout=False):
+    def __init__(self, n_users, n_movies, layers, dropout):
         super().__init__()
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
@@ -31,6 +32,8 @@ class Recommender(nn.Module):
         self.user_embedding = nn.Embedding(n_users, embedding_dim)
         self.movie_embedding = nn.Embedding(n_movies, embedding_dim)
         self.dropout = dropout
+
+        self.bn = nn.BatchNorm1d(layers[0])
 
         self.fc_layers = torch.nn.ModuleList()
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
@@ -43,12 +46,14 @@ class Recommender(nn.Module):
         user_embedding = self.user_embedding(users)
         item_embedding = self.movie_embedding(items)
         x = torch.cat([user_embedding, item_embedding], 1)
+        x = self.bn(x)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         logit = self.output_layer(x)
-        rating = torch.sigmoid(logit)
+        if Params.rating_format == RatingFormat.BINARY:
+            rating = torch.sigmoid(logit)
         return rating
 
 
@@ -56,7 +61,10 @@ class RecommenderModule(nn.Module):
     def __init__(self, recommender: Recommender, use_wandb: bool):
         super().__init__()
         self.recommender = recommender
-        self.loss_fn = torch.nn.BCELoss()
+        if Params.rating_format == RatingFormat.BINARY:
+            self.loss_fn = torch.nn.BCELoss()
+        else:
+            self.loss_fn = torch.nn.MSELoss()
         self.use_wandb = use_wandb
 
     def training_step(self, batch):
@@ -83,7 +91,7 @@ def main(
     eval_every: int = 10000,
     max_batches: int = 10000,
 ):
-    dataset = MovieLens20MDataset("ml-25m/ratings.csv", "binary")
+    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format)
     test_size = 1000
     train_size = len(dataset) - test_size
     no_users, no_movies = dataset.no_movies, dataset.no_users
@@ -91,7 +99,7 @@ def main(
         dataset, [train_size, test_size]
     )
     train_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size)
-    eval_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size)
+    eval_dataloader = DataLoader(test_dataset, batch_size=Params.batch_size)
     model = Recommender(
         no_movies, no_users, layers=Params.layers, dropout=Params.dropout
     )

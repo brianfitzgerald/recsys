@@ -4,7 +4,7 @@ import torch.utils.data
 from enum import IntEnum
 
 
-class ReturnFormat(IntEnum):
+class RatingFormat(IntEnum):
     BINARY = 1
     RATING = 2
 
@@ -37,7 +37,7 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
     # genome-scores.csv:
     # movieId,tagId,relevance
 
-    def __init__(self, dataset_path: str, return_format: ReturnFormat):
+    def __init__(self, dataset_path: str, return_format: RatingFormat):
         data = pd.read_csv(
             dataset_path, sep=",", engine="c", header="infer"
         ).to_numpy()[:, :3]
@@ -55,7 +55,7 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         rating = (
             self.ratings[index] / 5
-            if self.return_format == ReturnFormat.RATING
+            if self.return_format == RatingFormat.RATING
             else self.ratings[index] >= 3
         ).astype(np.float32)
         return self.user_ids[index], self.movie_ids[index], rating
