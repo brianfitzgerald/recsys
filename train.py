@@ -1,3 +1,4 @@
+from typing import List
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -13,8 +14,16 @@ from dataset import MovieLens20MDataset
 torch.manual_seed(0)
 
 
+class Params:
+    learning_rate: int = 1e-2
+    layers: List[int] = [16, 8]
+    dropout: float = 0.2
+    batch_size: int = 2048
+    weight_decay: float = 1e-5
+
+
 class Recommender(nn.Module):
-    def __init__(self, n_users, n_movies, layers=[16, 32, 16, 8], dropout=False):
+    def __init__(self, n_users, n_movies, layers=[16, 8], dropout=False):
         super().__init__()
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
@@ -29,7 +38,6 @@ class Recommender(nn.Module):
 
         # 1 is the output dimension
         self.output_layer = torch.nn.Linear(layers[-1], 1)
-        self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, users, items):
         user_embedding = self.user_embedding(users)
@@ -40,7 +48,7 @@ class Recommender(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         logit = self.output_layer(x)
-        rating = self.sigmoid(logit)
+        rating = torch.sigmoid(logit)
         return rating
 
 
@@ -69,7 +77,12 @@ class RecommenderModule(nn.Module):
             return loss
 
 
-def main(use_wandb: bool = False, num_epochs: int = 5000, eval_every: int = 1000):
+def main(
+    use_wandb: bool = False,
+    num_epochs: int = 5000,
+    eval_every: int = 10000,
+    max_batches: int = 10000,
+):
     dataset = MovieLens20MDataset("ml-25m/ratings.csv", "binary")
     test_size = 1000
     train_size = len(dataset) - test_size
@@ -77,18 +90,23 @@ def main(use_wandb: bool = False, num_epochs: int = 5000, eval_every: int = 1000
     train_dataset, test_dataset = torch.utils.data.random_split(
         dataset, [train_size, test_size]
     )
-    train_dataloader = DataLoader(train_dataset, batch_size=2 ^ 12)
-    eval_dataloader = DataLoader(test_dataset, batch_size=2 ^ 12)
-    model = Recommender(no_movies, no_users)
+    train_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size)
+    eval_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size)
+    model = Recommender(
+        no_movies, no_users, layers=Params.layers, dropout=Params.dropout
+    )
     model.train()
     module = RecommenderModule(model, use_wandb)
     if use_wandb:
         wandb.init(project="recsys")
         wandb.watch(model)
-    optimizer = torch.optim.AdamW(module.parameters(), lr=1e-3, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(
+        module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
+    )
     for i in range(num_epochs):
         for j, batch in enumerate(train_dataloader):
             loss = module.training_step(batch)
+            optimizer.zero_grad()
             loss.backward()
 
             grads = [
@@ -97,18 +115,24 @@ def main(use_wandb: bool = False, num_epochs: int = 5000, eval_every: int = 1000
                 if param.grad is not None
             ]
             total_norm = torch.cat(grads).norm()
+            if use_wandb:
+                wandb.log({"total_norm": total_norm.item()})
 
             print(
                 f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}"
             )
 
-            torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
+            if j > max_batches:
+                break
+
+            torch.nn.utils.clip_grad_norm_(module.parameters(), 1)
             optimizer.step()
             if j % eval_every == 0:
                 print("Running eval..")
                 for j, batch in enumerate(eval_dataloader):
                     eval_loss = module.eval_step(batch)
                     print(f"Eval loss for batch {j}: {eval_loss.item()}")
+                    break
 
 
 if __name__ == "__main__":
