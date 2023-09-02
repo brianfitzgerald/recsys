@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from torch import nn
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 import fire
 import wandb
 
