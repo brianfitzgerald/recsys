@@ -1,3 +1,4 @@
+from math import log2
 from typing import List
 import torch
 import torch.nn.functional as F
@@ -6,6 +7,7 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 import fire
 import wandb
+import numpy as np
 
 from dataset import MovieLens20MDataset, RatingFormat
 
@@ -19,7 +21,7 @@ class Params:
     dropout: float = 0.2
     batch_size: int = 2048
     weight_decay: float = 1e-5
-    rating_format: RatingFormat = RatingFormat.BINARY
+    rating_format: RatingFormat = RatingFormat.RATING
 
 
 class Recommender(nn.Module):
@@ -50,10 +52,40 @@ class Recommender(nn.Module):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        logit = self.output_layer(x)
-        if Params.rating_format == RatingFormat.BINARY:
-            rating = torch.sigmoid(logit)
+        rating = self.output_layer(x)
+        rating = torch.sigmoid(rating)
         return rating
+
+
+def ndcg_score(y_true, y_score, k=10):
+    rating_pairs = np.stack([y_true, y_score], axis=1).tolist()
+    sorted_pairs = sorted(rating_pairs, key=lambda x: x[1], reverse=True)
+    dcg = sum(
+        (true_rating / log2(index + 2))
+        for index, (true_rating, _) in enumerate(sorted_pairs)
+    )
+    ideal_pairs = sorted(rating_pairs, key=lambda x: x[0], reverse=True)
+    idcg = sum(
+        (true_rating / log2(index + 2))
+        for index, (true_rating, _) in enumerate(ideal_pairs)
+    )
+    ndcg = dcg / idcg
+    return ndcg
+
+
+def top_k_accuracy(true_ratings, predicted_ratings, k):
+    num_correct = 0
+    total_instances = len(true_ratings)
+
+    # Get the indices of the top-k predicted ratings
+    top_k_indices = np.argsort(predicted_ratings)[-k:]
+
+    for true_rating, top_index in zip(true_ratings, top_k_indices):
+        if true_rating == top_index:
+            num_correct += 1
+
+    top_k_acc = num_correct / total_instances
+    return top_k_acc
 
 
 class RecommenderModule(nn.Module):
@@ -74,11 +106,17 @@ class RecommenderModule(nn.Module):
             wandb.log({"train_loss": loss})
         return loss
 
-    def eval_step(self, batch):
+    def eval_step(self, batch, idx: int, k: int = 10):
         with torch.no_grad():
             users, items, ratings = batch
             preds = self.recommender(users, items).squeeze(1)
             loss = self.loss_fn(preds, ratings)
+
+            # gives the index of the top k predictions for each sample
+            ndcg_val = ndcg_score(ratings, preds, k=k)
+            hit_ratio = top_k_accuracy(ratings, preds, k=k)
+            print(f"Eval: batch={idx}, hit_ratio={hit_ratio}, ndcg={ndcg_val}")
+
             if self.use_wandb:
                 wandb.log({"eval_loss": loss})
             return loss
@@ -87,7 +125,7 @@ class RecommenderModule(nn.Module):
 def main(
     use_wandb: bool = False,
     num_epochs: int = 5000,
-    eval_every: int = 10000,
+    eval_every: int = 100,
     max_batches: int = 10000,
 ):
     dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format)
@@ -137,8 +175,7 @@ def main(
             if j % eval_every == 0:
                 print("Running eval..")
                 for j, batch in enumerate(eval_dataloader):
-                    eval_loss = module.eval_step(batch)
-                    print(f"Eval loss for batch {j}: {eval_loss.item()}")
+                    module.eval_step(batch, j)
                     break
 
 
