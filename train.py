@@ -3,7 +3,6 @@ from typing import List
 import torch
 import torch.nn.functional as F
 from torch import nn
-from datasets import load_dataset
 from torch.utils.data import DataLoader
 import fire
 import wandb
@@ -19,9 +18,10 @@ class Params:
     learning_rate: int = 1e-2
     layers: List[int] = [16, 8]
     dropout: float = 0.2
-    batch_size: int = 2048
+    batch_size: int = 1024
     weight_decay: float = 1e-5
     rating_format: RatingFormat = RatingFormat.RATING
+    negative_sample_threshold: float = 3
 
 
 class Recommender(nn.Module):
@@ -114,11 +114,11 @@ class RecommenderModule(nn.Module):
 
             # gives the index of the top k predictions for each sample
             ndcg_val = ndcg_score(ratings, preds, k=k)
-            hit_ratio = top_k_accuracy(ratings, preds, k=k)
-            print(f"Eval: batch={idx}, hit_ratio={hit_ratio}, ndcg={ndcg_val}")
+            hit_ratio_val = top_k_accuracy(ratings, preds, k=k)
+            print(f"Eval: batch={idx}, hit_ratio={hit_ratio_val}, ndcg={ndcg_val}")
 
             if self.use_wandb:
-                wandb.log({"eval_loss": loss})
+                wandb.log({"eval_loss": loss, "hit_ratio": hit_ratio_val, "ndcg": ndcg_val})
             return loss
 
 
@@ -128,15 +128,15 @@ def main(
     eval_every: int = 100,
     max_batches: int = 10000,
 ):
-    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format)
-    test_size = 1000
-    train_size = len(dataset) - test_size
+    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format, Params.negative_sample_threshold)
+    eval_size = 1000
+    train_size = len(dataset) - eval_size
     no_users, no_movies = dataset.no_movies, dataset.no_users
-    train_dataset, test_dataset = torch.utils.data.random_split(
-        dataset, [train_size, test_size]
+    train_dataset, eval_dataset = torch.utils.data.random_split(
+        dataset, [train_size, eval_size]
     )
     train_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size)
-    eval_dataloader = DataLoader(test_dataset, batch_size=Params.batch_size)
+    eval_dataloader = DataLoader(eval_dataset, batch_size=Params.batch_size)
     model = Recommender(
         no_movies, no_users, layers=Params.layers, dropout=Params.dropout
     )
