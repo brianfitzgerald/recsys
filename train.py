@@ -15,13 +15,14 @@ torch.manual_seed(0)
 
 
 class Params:
-    learning_rate: int = 1e-2
-    layers: List[int] = [16, 8]
+    learning_rate: int = 5e-3
+    layers: List[int] = [16, 8, 4]
     dropout: float = 0.2
-    batch_size: int = 1024
-    weight_decay: float = 1e-5
+    batch_size: int = 2048
+    weight_decay: float = 1e-2
     rating_format: RatingFormat = RatingFormat.RATING
     negative_sample_threshold: float = 3
+    max_users: int = 10000
 
 
 class Recommender(nn.Module):
@@ -128,7 +129,7 @@ def main(
     eval_every: int = 100,
     max_batches: int = 10000,
 ):
-    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format, Params.negative_sample_threshold)
+    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format, Params.negative_sample_threshold, 4, Params.max_users)
     eval_size = 1000
     train_size = len(dataset) - eval_size
     no_users, no_movies = dataset.no_movies, dataset.no_users

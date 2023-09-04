@@ -11,17 +11,6 @@ class RatingFormat(IntEnum):
 
 
 class MovieLens20MDataset(torch.utils.data.Dataset):
-    """
-    MovieLens 20M Dataset
-
-    Data preparation
-        treat samples with a rating less than 3 as negative samples
-
-    :param dataset_path: MovieLens dataset path
-
-    Reference:
-        https://grouplens.org/datasets/movielens
-    """
 
     # tags.csv:
     # userId,movieId,tag,timestamp
@@ -38,14 +27,21 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
     # genome-scores.csv:
     # movieId,tagId,relevance
 
-    def __init__(self, dataset_path: str, return_format: RatingFormat, negative_sample_threshold: float = 3, num_negative_samples: int = 4):
+    def __init__(self, dataset_path: str, return_format: RatingFormat, negative_sample_threshold: float = 3, num_negative_samples: int = 4, max_users: int = None):
         data = pd.read_csv(
             dataset_path, sep=",", engine="c", header="infer"
         ).to_numpy()[:, :3]
+
+        if max_users is not None:
+            first_n_users = np.unique(data[:, 0])[:max_users]
+            ratings_from_first_n_users = data[np.where(np.isin(data[:, 0], first_n_users))]
+            data = ratings_from_first_n_users
+        
         self.no_users = np.max(data[:, 0].astype(np.int64)) + 1
         self.no_movies = np.max(data[:, 1].astype(np.int64)) + 1
         self.no_samples = len(data)
         self.num_negative_samples = num_negative_samples
+        print(f"Number of users: {self.no_users} | Number of movies: {self.no_movies} | Number of samples: {self.no_samples}")
 
         self.positive_ratings = data[np.where(data[:, 2] >= negative_sample_threshold, 1, 0)]
         self.negative_ratings = data[np.where(data[:, 2] < negative_sample_threshold, 1, 0)]
@@ -65,4 +61,4 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         rating = sample[2].astype(np.float32)
         if self.return_format == RatingFormat.BINARY:
             rating = rating >= self.neg_threshold
-        return sample[0].astype(np.int64), sample[1].astype(np.int64), rating
+        return sample[0].astype(np.int64), sample[1].astype(np.int64), rating.astype(np.float32)
