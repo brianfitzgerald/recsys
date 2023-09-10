@@ -1,5 +1,7 @@
 from math import log2
+import random
 from typing import List, Optional
+import warnings
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -7,6 +9,7 @@ from torch.utils.data import DataLoader
 import fire
 import wandb
 import numpy as np
+from collections import defaultdict
 
 from dataset import MovieLens20MDataset, RatingFormat
 
@@ -17,12 +20,12 @@ torch.manual_seed(0)
 class Params:
     learning_rate: int = 1e-3
     weight_decay: float = 1e-5
-    layers: List[int] = [64,32,16,8]
+    layers: List[int] = [64, 32, 16, 8]
     dropout: float = 0.2
     batch_size: int = 256
     rating_format: RatingFormat = RatingFormat.RATING
     max_users: Optional[int] = None
-    max_rows: int = 10000
+    max_rows: int = 100000
 
 
 class Recommender(nn.Module):
@@ -59,7 +62,7 @@ class Recommender(nn.Module):
         return rating
 
 
-def ndcg_score(y_true, y_score, k=10):
+def ndcg_score(y_true, y_score):
     rating_pairs = np.stack([y_true, y_score], axis=1).tolist()
     sorted_pairs = sorted(rating_pairs, key=lambda x: x[1], reverse=True)
     dcg = sum(
@@ -73,6 +76,45 @@ def ndcg_score(y_true, y_score, k=10):
     )
     ndcg = dcg / idcg
     return ndcg
+
+
+def novelty_score(predicted: List[int], pop: List[int], num_users: int, num_items: int):
+    mean_self_information = []
+    k = 0
+    for sublist in predicted:
+        self_information = 0
+        k += 1
+        for i in sublist:
+            if pop[i] > 0:
+                self_information += np.sum(-np.log2(pop[i] / num_users))
+            else:
+                continue
+        mean_self_information.append(self_information / num_items)
+    novelty = sum(mean_self_information) / k
+    return novelty
+
+def prediction_coverage(predicted: List[list], catalog: list):
+    unique_items_catalog = set(catalog)
+    if len(catalog)!=len(unique_items_catalog):
+        raise AssertionError("Duplicated items in catalog")
+
+    predicted_flattened = [p for sublist in predicted for p in sublist]
+    unique_items_pred = set(predicted_flattened)
+    
+    if not unique_items_pred.issubset(unique_items_catalog):
+        raise AssertionError("There are items in predictions but unseen in catalog.")
+    
+    num_unique_predictions = len(unique_items_pred)
+    prediction_coverage = round(num_unique_predictions/(len(catalog)* 1.0)* 100, 2)
+    return prediction_coverage
+
+def catalog_coverage(predicted: List[list], catalog: list, k: int) -> float:
+    sampling = random.choices(predicted, k=k)
+    predicted_flattened = [p for sublist in sampling for p in sublist]
+    L_predictions = len(set(predicted_flattened))
+    catalog_coverage = round(L_predictions/(len(catalog)*1.0)*100,2)
+    return catalog_coverage
+
 
 class RecommenderModule(nn.Module):
     def __init__(self, recommender: Recommender, use_wandb: bool):
@@ -92,38 +134,62 @@ class RecommenderModule(nn.Module):
             wandb.log({"train_loss": loss})
         return loss
 
-    def eval_step(self, batch, idx: int, k: int = 10):
+    def eval_step(self, batch, k: int = 10):
         with torch.no_grad():
             users, items, ratings = batch
             preds = self.recommender(users, items).squeeze(1)
-            loss = self.loss_fn(preds, ratings)
+            eval_loss = self.loss_fn(preds, ratings).item()
+            user_item_ratings = []
+            for user_id in users:
+                user_id = user_id.item()
+                # predict every item for every user
+                user_ids = torch.full_like(items, user_id)
+                user_preds = self.recommender(user_ids, items).squeeze(1)
+                top_k_preds = torch.topk(user_preds, k=len(items)).indices
+                user_item_ratings.append(top_k_preds.tolist())
+
+            item_popularity = defaultdict(int)
+            for item in items:
+                item_popularity[item.item()] += 1
+
+            novelty = novelty_score(
+                user_item_ratings, item_popularity, len(users), len(items)
+            )
 
             # gives the index of the top k predictions for each sample
-            ndcg_val = ndcg_score(ratings, preds, k=k)
-            log_dict = {"eval_loss": loss, "ndcg": ndcg_val}
-            print(log_dict)
+            log_dict = {
+                "eval_loss": eval_loss,
+                "ndcg": ndcg_score(ratings, preds),
+                "novelty": novelty,
+                "prediction_coverage": prediction_coverage(user_item_ratings, item_popularity.keys()),
+                "catalog_coverage": catalog_coverage(user_item_ratings, item_popularity.keys(), k),
+            }
 
+            print(log_dict)
             if self.use_wandb:
                 wandb.log(log_dict)
-            return loss
 
 
 def main(
     use_wandb: bool = False,
     num_epochs: int = 5000,
     eval_every: int = 100,
-    max_batches: int = 10000,
+    max_batches: int = 100,
+    eval_size: int = 1000,
 ):
     print("Loading dataset..")
-    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format, Params.max_rows, Params.max_users)
-    eval_size = 1000
+    dataset = MovieLens20MDataset(
+        "ml-25m/ratings.csv", Params.rating_format, Params.max_rows, Params.max_users
+    )
     train_size = len(dataset) - eval_size
     no_users, no_movies = dataset.no_movies, dataset.no_users
     train_dataset, eval_dataset = torch.utils.data.random_split(
         dataset, [train_size, eval_size]
     )
-    train_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size, shuffle=False)
-    eval_dataloader = DataLoader(eval_dataset, batch_size=Params.batch_size)
+    train_dataloader = DataLoader(
+        train_dataset, batch_size=Params.batch_size, shuffle=False, drop_last=True
+    )
+    eval_dataloader = DataLoader(eval_dataset, batch_size=eval_size, shuffle=False)
     model = Recommender(
         no_movies, no_users, layers=Params.layers, dropout=Params.dropout
     )
@@ -162,7 +228,7 @@ def main(
             if j % eval_every == 0:
                 print("Running eval..")
                 for j, batch in enumerate(eval_dataloader):
-                    module.eval_step(batch, j)
+                    module.eval_step(batch, eval_size)
                     break
 
 
