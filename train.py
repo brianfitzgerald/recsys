@@ -23,7 +23,7 @@ class Params:
     layers: List[int] = [64, 32, 16, 8]
     dropout: float = 0.2
     batch_size: int = 256
-    rating_format: RatingFormat = RatingFormat.RATING
+    rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
     max_rows: int = 100000
 
@@ -173,7 +173,7 @@ class RecommenderModule(nn.Module):
 def main(
     use_wandb: bool = False,
     num_epochs: int = 5000,
-    eval_every: int = 100,
+    eval_every: int = 1,
     max_batches: int = 100,
     eval_size: int = 1000,
 ):
@@ -225,11 +225,11 @@ def main(
                 break
 
             torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
-            if j % eval_every == 0:
-                print("Running eval..")
-                for j, batch in enumerate(eval_dataloader):
-                    module.eval_step(batch, eval_size)
-                    break
+        if i % eval_every == 0:
+            print("Running eval..")
+            for j, batch in enumerate(eval_dataloader):
+                module.eval_step(batch, eval_size)
+                break
 
 
 if __name__ == "__main__":
