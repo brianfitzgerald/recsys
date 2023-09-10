@@ -31,7 +31,9 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         data = pd.read_csv(
             dataset_path, sep=",", engine="c", header="infer", nrows=max_rows
         ).to_numpy()[:, :3]
+
         self.data = data
+        self.neg_threshold = 2.5
 
         if max_users is not None:
             first_n_users = np.unique(data[:, 0])[:max_users]

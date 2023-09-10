@@ -53,8 +53,9 @@ class Recommender(nn.Module):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        logit = self.output_layer(x)
-        rating = torch.sigmoid(logit)
+        rating = self.output_layer(x)
+        if Params.rating_format == RatingFormat.BINARY:
+            rating = torch.sigmoid(rating)
         return rating
 
 
