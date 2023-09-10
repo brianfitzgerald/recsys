@@ -1,5 +1,5 @@
 from math import log2
-from typing import List
+from typing import List, Optional
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -16,13 +16,13 @@ torch.manual_seed(0)
 
 class Params:
     learning_rate: int = 1e-3
-    layers: List[int] = [64,32,16,8]
-    dropout: float = 0
-    batch_size: int = 256
     weight_decay: float = 1e-5
-    rating_format: RatingFormat = RatingFormat.BINARY
-    negative_sample_threshold: float = 3
-    max_users: int = 10
+    layers: List[int] = [64,32,16,8]
+    dropout: float = 0.2
+    batch_size: int = 256
+    rating_format: RatingFormat = RatingFormat.RATING
+    max_users: Optional[int] = None
+    max_rows: int = 10000
 
 
 class Recommender(nn.Module):
@@ -48,7 +48,7 @@ class Recommender(nn.Module):
         user_embedding = self.user_embedding(users)
         item_embedding = self.movie_embedding(items)
         x = torch.cat([user_embedding, item_embedding], 1)
-        # x = self.bn(x)
+        x = self.bn(x)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
@@ -129,7 +129,7 @@ def main(
     max_batches: int = 10000,
 ):
     print("Loading dataset..")
-    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format, Params.negative_sample_threshold, 4, Params.max_users)
+    dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format, Params.max_rows, Params.max_users)
     eval_size = 1000
     train_size = len(dataset) - eval_size
     no_users, no_movies = dataset.no_movies, dataset.no_users
