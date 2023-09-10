@@ -15,14 +15,14 @@ torch.manual_seed(0)
 
 
 class Params:
-    learning_rate: int = 5e-3
-    layers: List[int] = [16, 8, 4]
-    dropout: float = 0.2
-    batch_size: int = 2048
-    weight_decay: float = 1e-2
-    rating_format: RatingFormat = RatingFormat.RATING
+    learning_rate: int = 1e-3
+    layers: List[int] = [64,32,16,8]
+    dropout: float = 0
+    batch_size: int = 256
+    weight_decay: float = 1e-5
+    rating_format: RatingFormat = RatingFormat.BINARY
     negative_sample_threshold: float = 3
-    max_users: int = 10000
+    max_users: int = 10
 
 
 class Recommender(nn.Module):
@@ -48,13 +48,13 @@ class Recommender(nn.Module):
         user_embedding = self.user_embedding(users)
         item_embedding = self.movie_embedding(items)
         x = torch.cat([user_embedding, item_embedding], 1)
-        x = self.bn(x)
+        # x = self.bn(x)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        rating = self.output_layer(x)
-        rating = torch.sigmoid(rating)
+        logit = self.output_layer(x)
+        rating = torch.sigmoid(logit)
         return rating
 
 
@@ -87,7 +87,6 @@ def top_k_accuracy(true_ratings, predicted_ratings, k):
 
     top_k_acc = num_correct / total_instances
     return top_k_acc
-
 
 class RecommenderModule(nn.Module):
     def __init__(self, recommender: Recommender, use_wandb: bool):
@@ -129,6 +128,7 @@ def main(
     eval_every: int = 100,
     max_batches: int = 10000,
 ):
+    print("Loading dataset..")
     dataset = MovieLens20MDataset("ml-25m/ratings.csv", Params.rating_format, Params.negative_sample_threshold, 4, Params.max_users)
     eval_size = 1000
     train_size = len(dataset) - eval_size
@@ -136,7 +136,7 @@ def main(
     train_dataset, eval_dataset = torch.utils.data.random_split(
         dataset, [train_size, eval_size]
     )
-    train_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size)
+    train_dataloader = DataLoader(train_dataset, batch_size=Params.batch_size, shuffle=False)
     eval_dataloader = DataLoader(eval_dataset, batch_size=Params.batch_size)
     model = Recommender(
         no_movies, no_users, layers=Params.layers, dropout=Params.dropout
@@ -154,6 +154,7 @@ def main(
             loss = module.training_step(batch)
             optimizer.zero_grad()
             loss.backward()
+            optimizer.step()
 
             grads = [
                 param.grad.detach().flatten()
@@ -171,8 +172,7 @@ def main(
             if j > max_batches:
                 break
 
-            torch.nn.utils.clip_grad_norm_(module.parameters(), 1)
-            optimizer.step()
+            torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
             if j % eval_every == 0:
                 print("Running eval..")
                 for j, batch in enumerate(eval_dataloader):

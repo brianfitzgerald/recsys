@@ -3,6 +3,8 @@
 https://github.com/HarshdeepGupta/recommender_pytorch
 specifically, https://github.com/HarshdeepGupta/recommender_pytorch/blob/master/MLP.py
 
+https://github.com/hexiangnan/neural_collaborative_filtering
+
 https://medium.com/towards-data-science/recommender-systems-using-deep-learning-in-pytorch-from-scratch-f661b8f391d7
 
 paper - https://arxiv.org/abs/1708.05031
