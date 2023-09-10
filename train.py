@@ -1,7 +1,5 @@
 from math import log2
-import random
 from typing import List, Optional
-import warnings
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -12,6 +10,7 @@ import numpy as np
 from collections import defaultdict
 
 from dataset import MovieLens20MDataset, RatingFormat
+from metrics import *
 
 
 torch.manual_seed(0)
@@ -62,60 +61,6 @@ class Recommender(nn.Module):
         return rating
 
 
-def ndcg_score(y_true, y_score):
-    rating_pairs = np.stack([y_true, y_score], axis=1).tolist()
-    sorted_pairs = sorted(rating_pairs, key=lambda x: x[1], reverse=True)
-    dcg = sum(
-        (true_rating / log2(index + 2))
-        for index, (true_rating, _) in enumerate(sorted_pairs)
-    )
-    ideal_pairs = sorted(rating_pairs, key=lambda x: x[0], reverse=True)
-    idcg = sum(
-        (true_rating / log2(index + 2))
-        for index, (true_rating, _) in enumerate(ideal_pairs)
-    )
-    ndcg = dcg / idcg
-    return ndcg
-
-
-def novelty_score(predicted: List[int], pop: List[int], num_users: int, num_items: int):
-    mean_self_information = []
-    k = 0
-    for sublist in predicted:
-        self_information = 0
-        k += 1
-        for i in sublist:
-            if pop[i] > 0:
-                self_information += np.sum(-np.log2(pop[i] / num_users))
-            else:
-                continue
-        mean_self_information.append(self_information / num_items)
-    novelty = sum(mean_self_information) / k
-    return novelty
-
-def prediction_coverage(predicted: List[list], catalog: list):
-    unique_items_catalog = set(catalog)
-    if len(catalog)!=len(unique_items_catalog):
-        raise AssertionError("Duplicated items in catalog")
-
-    predicted_flattened = [p for sublist in predicted for p in sublist]
-    unique_items_pred = set(predicted_flattened)
-    
-    if not unique_items_pred.issubset(unique_items_catalog):
-        raise AssertionError("There are items in predictions but unseen in catalog.")
-    
-    num_unique_predictions = len(unique_items_pred)
-    prediction_coverage = round(num_unique_predictions/(len(catalog)* 1.0)* 100, 2)
-    return prediction_coverage
-
-def catalog_coverage(predicted: List[list], catalog: list, k: int) -> float:
-    sampling = random.choices(predicted, k=k)
-    predicted_flattened = [p for sublist in sampling for p in sublist]
-    L_predictions = len(set(predicted_flattened))
-    catalog_coverage = round(L_predictions/(len(catalog)*1.0)*100,2)
-    return catalog_coverage
-
-
 class RecommenderModule(nn.Module):
     def __init__(self, recommender: Recommender, use_wandb: bool):
         super().__init__()
@@ -148,6 +93,7 @@ class RecommenderModule(nn.Module):
                 top_k_preds = torch.topk(user_preds, k=len(items)).indices
                 user_item_ratings.append(top_k_preds.tolist())
 
+            unique_item_catalog = list(set(items.tolist()))
             item_popularity = defaultdict(int)
             for item in items:
                 item_popularity[item.item()] += 1
@@ -161,8 +107,9 @@ class RecommenderModule(nn.Module):
                 "eval_loss": eval_loss,
                 "ndcg": ndcg_score(ratings, preds),
                 "novelty": novelty,
-                "prediction_coverage": prediction_coverage(user_item_ratings, item_popularity.keys()),
-                "catalog_coverage": catalog_coverage(user_item_ratings, item_popularity.keys(), k),
+                "prediction_coverage": prediction_coverage_score(user_item_ratings, unique_item_catalog),
+                "catalog_coverage": catalog_coverage_score(user_item_ratings, unique_item_catalog, k),
+                "personalization": personalization_score(user_item_ratings),
             }
 
             print(log_dict)
@@ -173,7 +120,7 @@ class RecommenderModule(nn.Module):
 def main(
     use_wandb: bool = False,
     num_epochs: int = 5000,
-    eval_every: int = 1,
+    eval_every: int = 10,
     max_batches: int = 100,
     eval_size: int = 1000,
 ):
@@ -202,6 +149,11 @@ def main(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
     for i in range(num_epochs):
+        if i % eval_every == 0:
+            print("Running eval..")
+            for j, batch in enumerate(eval_dataloader):
+                module.eval_step(batch, eval_size)
+                break
         for j, batch in enumerate(train_dataloader):
             loss = module.training_step(batch)
             optimizer.zero_grad()
@@ -225,11 +177,6 @@ def main(
                 break
 
             torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
-        if i % eval_every == 0:
-            print("Running eval..")
-            for j, batch in enumerate(eval_dataloader):
-                module.eval_step(batch, eval_size)
-                break
 
 
 if __name__ == "__main__":

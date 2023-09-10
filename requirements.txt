@@ -5,3 +5,6 @@ exceptiongroup
 datasets
 wandb
 fire
+scipy
+pandas
+scikit-learn
