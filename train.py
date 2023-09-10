@@ -74,21 +74,6 @@ def ndcg_score(y_true, y_score, k=10):
     ndcg = dcg / idcg
     return ndcg
 
-
-def top_k_accuracy(true_ratings, predicted_ratings, k):
-    num_correct = 0
-    total_instances = len(true_ratings)
-
-    # Get the indices of the top-k predicted ratings
-    top_k_indices = np.argsort(predicted_ratings)[-k:]
-
-    for true_rating, top_index in zip(true_ratings, top_k_indices):
-        if true_rating == top_index:
-            num_correct += 1
-
-    top_k_acc = num_correct / total_instances
-    return top_k_acc
-
 class RecommenderModule(nn.Module):
     def __init__(self, recommender: Recommender, use_wandb: bool):
         super().__init__()
@@ -115,11 +100,11 @@ class RecommenderModule(nn.Module):
 
             # gives the index of the top k predictions for each sample
             ndcg_val = ndcg_score(ratings, preds, k=k)
-            hit_ratio_val = top_k_accuracy(ratings, preds, k=k)
-            print(f"Eval: batch={idx}, hit_ratio={hit_ratio_val}, ndcg={ndcg_val}")
+            log_dict = {"eval_loss": loss, "ndcg": ndcg_val}
+            print(log_dict)
 
             if self.use_wandb:
-                wandb.log({"eval_loss": loss, "hit_ratio": hit_ratio_val, "ndcg": ndcg_val})
+                wandb.log(log_dict)
             return loss
 
 
