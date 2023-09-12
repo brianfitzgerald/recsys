@@ -3,7 +3,7 @@ from typing import List, Optional
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import fire
 import wandb
 import numpy as np
@@ -82,34 +82,58 @@ class RecommenderModule(nn.Module):
     def eval_step(self, batch, k: int = 10):
         with torch.no_grad():
             users, items, ratings = batch
+            batch_size = len(ratings)
             preds = self.recommender(users, items).squeeze(1)
             eval_loss = self.loss_fn(preds, ratings).item()
-            user_item_ratings = []
+            user_item_ratings = np.empty((batch_size, batch_size))
+            true_item_ratings = np.empty((batch_size, batch_size))
             for user_id in users:
                 user_id = user_id.item()
                 # predict every item for every user
                 user_ids = torch.full_like(items, user_id)
                 user_preds = self.recommender(user_ids, items).squeeze(1)
-                top_k_preds = torch.topk(user_preds, k=len(items)).indices
-                user_item_ratings.append(top_k_preds.tolist())
+                top_k_preds = torch.topk(user_preds, k=k).indices
+                user_item_ratings[user_id] = top_k_preds.numpy()
+
+                true_top_k = torch.topk(ratings, k=k).indices
+                true_item_ratings[user_id] = true_top_k.numpy()
 
             unique_item_catalog = list(set(items.tolist()))
             item_popularity = defaultdict(int)
             for item in items:
                 item_popularity[item.item()] += 1
 
+            num_users = len(list(set(users.tolist())))
+            num_items = len(list(set(items.tolist())))
+
             novelty = novelty_score(
-                user_item_ratings, item_popularity, len(users), len(items)
+                user_item_ratings, item_popularity, num_users, num_items
             )
+
+            user_rating_preds = np.array(
+                [p for sublist in user_item_ratings for p in sublist]
+            )
+            user_rating_ref = np.array(
+                [p for sublist in user_item_ratings for p in sublist]
+            )
+
+            prediction_coverage = prediction_coverage_score(
+                user_item_ratings, unique_item_catalog
+            )
+            catalog_coverage = catalog_coverage_score(
+                user_item_ratings, unique_item_catalog, k
+            )
+
+            personalization = personalization_score(user_item_ratings)
 
             # gives the index of the top k predictions for each sample
             log_dict = {
                 "eval_loss": eval_loss,
-                "ndcg": ndcg_score(ratings, preds),
+                "ndcg": ndcg_score(user_rating_preds, user_rating_ref),
                 "novelty": novelty,
-                "prediction_coverage": prediction_coverage_score(user_item_ratings, unique_item_catalog),
-                "catalog_coverage": catalog_coverage_score(user_item_ratings, unique_item_catalog, k),
-                "personalization": personalization_score(user_item_ratings),
+                "prediction_coverage": prediction_coverage,
+                "catalog_coverage": catalog_coverage,
+                "personalization": personalization,
             }
 
             print(log_dict)
@@ -120,7 +144,7 @@ class RecommenderModule(nn.Module):
 def main(
     use_wandb: bool = False,
     num_epochs: int = 5000,
-    eval_every: int = 10,
+    eval_every: int = 1,
     max_batches: int = 100,
     eval_size: int = 1000,
 ):

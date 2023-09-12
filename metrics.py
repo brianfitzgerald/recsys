@@ -6,6 +6,7 @@ import pandas as pd
 import scipy.sparse as sp
 from sklearn.metrics.pairwise import cosine_similarity
 
+
 def ndcg_score(y_true, y_score):
     rating_pairs = np.stack([y_true, y_score], axis=1).tolist()
     sorted_pairs = sorted(rating_pairs, key=lambda x: x[1], reverse=True)
@@ -37,40 +38,28 @@ def novelty_score(predicted: List[int], pop: List[int], num_users: int, num_item
     novelty = sum(mean_self_information) / k
     return novelty
 
+
 def prediction_coverage_score(predicted: List[list], catalog: list):
     predicted_flattened = [p for sublist in predicted for p in sublist]
     unique_items_pred = set(predicted_flattened)
-    
+
     num_unique_predictions = len(unique_items_pred)
-    prediction_coverage = round(num_unique_predictions/(len(catalog)* 1.0)* 100, 2)
+    prediction_coverage = round(num_unique_predictions / (len(catalog) * 1.0) * 100, 2)
     return prediction_coverage
+
 
 def catalog_coverage_score(predicted: List[list], catalog: list, k: int) -> float:
     sampling = random.choices(predicted, k=k)
     predicted_flattened = [p for sublist in sampling for p in sublist]
     L_predictions = len(set(predicted_flattened))
-    catalog_coverage = round(L_predictions/(len(catalog)*1.0)*100,2)
+    catalog_coverage = round(L_predictions / (len(catalog) * 1.0) * 100, 2)
     return catalog_coverage
 
-def personalization_score(predicted: List[list]) -> float:
 
-    def make_rec_matrix(predicted: List[list]) -> sp.csr_matrix:
-        df = pd.DataFrame(data=predicted).reset_index().melt(
-            id_vars='index', value_name='item',
-        )
-        df = df[['index', 'item']].pivot(index='index', columns='item', values='item')
-        df = pd.notna(df)*1
-        rec_matrix = sp.csr_matrix(df.values)
-        return rec_matrix
+def personalization_score(predicted: np.ndarray) -> float:
 
-    #create matrix for recommendations
-    predicted = np.array(predicted)
-    rec_matrix_sparse = make_rec_matrix(predicted)
+    similarity = cosine_similarity(X=predicted, dense_output=False)
 
-    #calculate similarity for every user's recommendation list
-    similarity = cosine_similarity(X=rec_matrix_sparse, dense_output=False)
-
-    #calculate average similarity
     dim = similarity.shape[0]
     personalization = (similarity.sum() - dim) / (dim * (dim - 1))
-    return 1-personalization
+    return 1 - personalization
