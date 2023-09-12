@@ -17,11 +17,11 @@ torch.manual_seed(0)
 
 
 class Params:
-    learning_rate: int = 1e-3
+    learning_rate: int = 5e-4
     weight_decay: float = 1e-5
     layers: List[int] = [64, 32, 16, 8]
     dropout: float = 0.2
-    batch_size: int = 256
+    batch_size: int = 128
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
     max_rows: int = 100000
@@ -143,7 +143,7 @@ class RecommenderModule(nn.Module):
 
 def main(
     use_wandb: bool = False,
-    num_epochs: int = 5000,
+    num_epochs: int = 100,
     eval_every: int = 1,
     max_batches: int = 100,
     eval_size: int = 1000,
