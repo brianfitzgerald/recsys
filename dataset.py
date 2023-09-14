@@ -7,7 +7,7 @@ from numpy.random import choice, randint
 
 class RatingFormat(IntEnum):
     BINARY = 1
-    RATING = 2
+    SCORE = 2
 
 
 class MovieLens20MDataset(torch.utils.data.Dataset):

@@ -9,9 +9,16 @@ https://medium.com/towards-data-science/recommender-systems-using-deep-learning-
 
 paper - https://arxiv.org/abs/1708.05031
 
+### Retrieving datasets
+
 ```
 wget https://files.grouplens.org/datasets/movielens/ml-25m.zip
 unzip ml-25m.zip
+```
+
+```
+wget https://jmcauley.ucsd.edu/data/amazon_v2/categoryFilesSmall/Toys_and_Games_5.json.gz --no-check-certificate
+gzip -d Toys_and_Games_5.json.gz
 ```
 
 Multitask paper:

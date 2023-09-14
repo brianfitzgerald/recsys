@@ -8,6 +8,8 @@ import fire
 import wandb
 import numpy as np
 from collections import defaultdict
+from sklearn.metrics import roc_auc_score
+from enum import IntEnum
 
 from dataset import MovieLens20MDataset, RatingFormat
 from metrics import *
@@ -16,19 +18,85 @@ from metrics import *
 torch.manual_seed(0)
 
 
+class ModelArchitecture(IntEnum):
+    NEURAL_CF = 1
+    MATRIX_FACTORIZATION = 2
+    DEEP_FM = 3
+
+
+class DatasetSource(IntEnum):
+    MOVIELENS = 1
+    AMAZON = 2
+    CRITEO = 3
+
+
 class Params:
     learning_rate: int = 5e-4
     weight_decay: float = 1e-5
     layers: List[int] = [64, 32, 16, 8]
+
+    # only used for MF
+    embedding_dim: int = 32
     dropout: float = 0.2
-    batch_size: int = 128
+    batch_size: int = 1
+    eval_size: int = 10
+    model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
+    dataset_source: DatasetSource = DatasetSource.MOVIELENS
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
-    max_rows: int = 100000
+    max_rows: int = 100
 
 
-class Recommender(nn.Module):
-    def __init__(self, n_users, n_movies, layers, dropout):
+class DeepFMModel(nn.Module):
+    def __init__(
+        self, n_users: int, n_movies: int, embedding_dim: int, layers: List[int]
+    ) -> None:
+        super().__init__()
+        self.user_embedding = nn.Embedding(n_users, embedding_dim)
+        self.movie_embedding = nn.Embedding(n_movies, embedding_dim)
+        self.fc_layers = torch.nn.ModuleList()
+
+        for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
+            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
+            self.fc_layers.append(torch.nn.ReLU())
+            self.fc_layers.append(torch.nn.Dropout(0.1))
+
+    def forward(self, users, items):
+        user_emb = self.user_embedding(users)
+        item_emb = self.movie_embedding(items)
+        emb_cat = torch.cat([user_emb, item_emb], 1)
+        x = self.fc_layers(x)
+        x = x + get_fm_loss(emb_cat)
+        x = torch.sigmoid(x)
+        return x
+
+
+def get_fm_loss(emb_cat: torch.Tensor):
+    square_of_sum = torch.pow(torch.sum(emb_cat, dim=1, keepdim=True), 2)
+    sum_of_square = torch.sum(emb_cat * emb_cat, dim=1, keepdim=True)
+    cross_term = square_of_sum - sum_of_square
+    cross_term = 0.5 * torch.sum(cross_term, dim=2, keepdim=False)
+
+    return cross_term
+
+
+class MatrixFactorizationModel(nn.Module):
+    def __init__(self, n_users: int, n_movies: int, embedding_dim: int) -> None:
+        super().__init__()
+        self.user_embedding = nn.Embedding(n_users, embedding_dim)
+        self.movie_embedding = nn.Embedding(n_movies, embedding_dim)
+        self.fc_layers = torch.nn.ModuleList()
+
+    def forward(self, users, items):
+        user_emb = self.user_embedding(users)
+        item_emb = self.movie_embedding(items)
+        interaction = torch.sum(user_emb * item_emb, dim=1)
+        interaction = torch.sigmoid(interaction)
+        return interaction
+
+
+class NeuralCFModel(nn.Module):
+    def __init__(self, n_users: int, n_movies: int, layers: List[int], dropout: float):
         super().__init__()
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
@@ -47,9 +115,9 @@ class Recommender(nn.Module):
         self.output_layer = torch.nn.Linear(layers[-1], 1)
 
     def forward(self, users, items):
-        user_embedding = self.user_embedding(users)
-        item_embedding = self.movie_embedding(items)
-        x = torch.cat([user_embedding, item_embedding], 1)
+        user_emb = self.user_embedding(users)
+        item_emb = self.movie_embedding(items)
+        x = torch.cat([user_emb, item_emb], 1)
         x = self.bn(x)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
@@ -58,11 +126,11 @@ class Recommender(nn.Module):
         rating = self.output_layer(x)
         if Params.rating_format == RatingFormat.BINARY:
             rating = torch.sigmoid(rating)
-        return rating
+        return rating.squeeze(1).float()
 
 
 class RecommenderModule(nn.Module):
-    def __init__(self, recommender: Recommender, use_wandb: bool):
+    def __init__(self, recommender: nn.Module, use_wandb: bool):
         super().__init__()
         self.recommender = recommender
         if Params.rating_format == RatingFormat.BINARY:
@@ -73,7 +141,7 @@ class RecommenderModule(nn.Module):
 
     def training_step(self, batch):
         users, items, ratings = batch
-        preds = self.recommender(users, items).squeeze(1).float()
+        preds = self.recommender(users, items)
         loss = self.loss_fn(preds, ratings)
         if self.use_wandb:
             wandb.log({"train_loss": loss})
@@ -83,7 +151,7 @@ class RecommenderModule(nn.Module):
         with torch.no_grad():
             users, items, ratings = batch
             batch_size = len(ratings)
-            preds = self.recommender(users, items).squeeze(1)
+            preds = self.recommender(users, items)
             eval_loss = self.loss_fn(preds, ratings).item()
             user_item_ratings = np.empty((batch_size, batch_size))
             true_item_ratings = np.empty((batch_size, batch_size))
@@ -91,7 +159,7 @@ class RecommenderModule(nn.Module):
                 user_id = user_id.item()
                 # predict every item for every user
                 user_ids = torch.full_like(items, user_id)
-                user_preds = self.recommender(user_ids, items).squeeze(1)
+                user_preds = self.recommender(user_ids, items)
                 top_k_preds = torch.topk(user_preds, k=k).indices
                 user_item_ratings[user_id] = top_k_preds.numpy()
 
@@ -126,6 +194,8 @@ class RecommenderModule(nn.Module):
 
             personalization = personalization_score(user_item_ratings)
 
+            # roc_auc = roc_auc_score(user_rating_ref, user_rating_preds)
+
             # gives the index of the top k predictions for each sample
             log_dict = {
                 "eval_loss": eval_loss,
@@ -134,6 +204,7 @@ class RecommenderModule(nn.Module):
                 "prediction_coverage": prediction_coverage,
                 "catalog_coverage": catalog_coverage,
                 "personalization": personalization,
+                # "roc_auc": roc_auc,
             }
 
             print(log_dict)
@@ -146,24 +217,32 @@ def main(
     num_epochs: int = 100,
     eval_every: int = 1,
     max_batches: int = 100,
-    eval_size: int = 1000,
 ):
     print("Loading dataset..")
     dataset = MovieLens20MDataset(
         "ml-25m/ratings.csv", Params.rating_format, Params.max_rows, Params.max_users
     )
-    train_size = len(dataset) - eval_size
+    train_size = len(dataset) - Params.eval_size
     no_users, no_movies = dataset.no_movies, dataset.no_users
     train_dataset, eval_dataset = torch.utils.data.random_split(
-        dataset, [train_size, eval_size]
+        dataset, [train_size, Params.eval_size]
     )
     train_dataloader = DataLoader(
         train_dataset, batch_size=Params.batch_size, shuffle=False, drop_last=True
     )
-    eval_dataloader = DataLoader(eval_dataset, batch_size=eval_size, shuffle=False)
-    model = Recommender(
-        no_movies, no_users, layers=Params.layers, dropout=Params.dropout
+    eval_dataloader = DataLoader(
+        eval_dataset, batch_size=Params.eval_size, shuffle=False
     )
+    if Params.model_architecture == ModelArchitecture.MATRIX_FACTORIZATION:
+        model = MatrixFactorizationModel(no_movies, no_users, Params.embedding_dim)
+    elif Params.model_architecture == ModelArchitecture.NEURAL_CF:
+        model = NeuralCFModel(
+            no_movies, no_users, layers=Params.layers, dropout=Params.dropout
+        )
+    elif Params.model_architecture == ModelArchitecture.DEEP_FM:
+        model = DeepFMModel(
+            no_movies, no_users, layers=Params.layers, dropout=Params.dropout
+        )
     model.train()
     module = RecommenderModule(model, use_wandb)
     if use_wandb:
@@ -176,7 +255,7 @@ def main(
         if i % eval_every == 0:
             print("Running eval..")
             for j, batch in enumerate(eval_dataloader):
-                module.eval_step(batch, eval_size)
+                module.eval_step(batch, Params.eval_size)
                 break
         for j, batch in enumerate(train_dataloader):
             loss = module.training_step(batch)
