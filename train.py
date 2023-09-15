@@ -1,27 +1,21 @@
+from collections import defaultdict
+from enum import IntEnum
 from math import log2
 from typing import List, Optional
+
+import fire
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn
-from torch.utils.data import DataLoader, Dataset
-import fire
 import wandb
-import numpy as np
-from collections import defaultdict
-from sklearn.metrics import roc_auc_score
-from enum import IntEnum
-
 from dataset import MovieLens20MDataset, RatingFormat
 from metrics import *
-
+from models import *
+from sklearn.metrics import roc_auc_score
+from torch import nn
+from torch.utils.data import DataLoader, Dataset
 
 torch.manual_seed(0)
-
-
-class ModelArchitecture(IntEnum):
-    NEURAL_CF = 1
-    MATRIX_FACTORIZATION = 2
-    DEEP_FM = 3
 
 
 class DatasetSource(IntEnum):
@@ -38,95 +32,13 @@ class Params:
     # only used for MF
     embedding_dim: int = 32
     dropout: float = 0.2
-    batch_size: int = 1
-    eval_size: int = 10
-    model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
+    batch_size: int = 128
+    eval_size: int = 100
+    max_rows: int = 100000
+    model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
-    max_rows: int = 100
-
-
-class DeepFMModel(nn.Module):
-    def __init__(
-        self, n_users: int, n_movies: int, embedding_dim: int, layers: List[int]
-    ) -> None:
-        super().__init__()
-        self.user_embedding = nn.Embedding(n_users, embedding_dim)
-        self.movie_embedding = nn.Embedding(n_movies, embedding_dim)
-        self.fc_layers = torch.nn.ModuleList()
-
-        for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
-            self.fc_layers.append(torch.nn.ReLU())
-            self.fc_layers.append(torch.nn.Dropout(0.1))
-
-    def forward(self, users, items):
-        user_emb = self.user_embedding(users)
-        item_emb = self.movie_embedding(items)
-        emb_cat = torch.cat([user_emb, item_emb], 1)
-        x = self.fc_layers(x)
-        x = x + get_fm_loss(emb_cat)
-        x = torch.sigmoid(x)
-        return x
-
-
-def get_fm_loss(emb_cat: torch.Tensor):
-    square_of_sum = torch.pow(torch.sum(emb_cat, dim=1, keepdim=True), 2)
-    sum_of_square = torch.sum(emb_cat * emb_cat, dim=1, keepdim=True)
-    cross_term = square_of_sum - sum_of_square
-    cross_term = 0.5 * torch.sum(cross_term, dim=2, keepdim=False)
-
-    return cross_term
-
-
-class MatrixFactorizationModel(nn.Module):
-    def __init__(self, n_users: int, n_movies: int, embedding_dim: int) -> None:
-        super().__init__()
-        self.user_embedding = nn.Embedding(n_users, embedding_dim)
-        self.movie_embedding = nn.Embedding(n_movies, embedding_dim)
-        self.fc_layers = torch.nn.ModuleList()
-
-    def forward(self, users, items):
-        user_emb = self.user_embedding(users)
-        item_emb = self.movie_embedding(items)
-        interaction = torch.sum(user_emb * item_emb, dim=1)
-        interaction = torch.sigmoid(interaction)
-        return interaction
-
-
-class NeuralCFModel(nn.Module):
-    def __init__(self, n_users: int, n_movies: int, layers: List[int], dropout: float):
-        super().__init__()
-        assert layers[0] % 2 == 0, "layers[0] must be an even number"
-
-        embedding_dim = int(layers[0] / 2)
-        self.user_embedding = nn.Embedding(n_users, embedding_dim)
-        self.movie_embedding = nn.Embedding(n_movies, embedding_dim)
-        self.dropout = dropout
-
-        self.bn = nn.BatchNorm1d(layers[0])
-
-        self.fc_layers = torch.nn.ModuleList()
-        for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
-
-        # 1 is the output dimension
-        self.output_layer = torch.nn.Linear(layers[-1], 1)
-
-    def forward(self, users, items):
-        user_emb = self.user_embedding(users)
-        item_emb = self.movie_embedding(items)
-        x = torch.cat([user_emb, item_emb], 1)
-        x = self.bn(x)
-        for idx, _ in enumerate(range(len(self.fc_layers))):
-            x = self.fc_layers[idx](x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        rating = self.output_layer(x)
-        if Params.rating_format == RatingFormat.BINARY:
-            rating = torch.sigmoid(rating)
-        return rating.squeeze(1).float()
 
 
 class RecommenderModule(nn.Module):
@@ -150,11 +62,11 @@ class RecommenderModule(nn.Module):
     def eval_step(self, batch, k: int = 10):
         with torch.no_grad():
             users, items, ratings = batch
-            batch_size = len(ratings)
+            max_user_id, num_items = users.max() + 1, items.shape[0]
             preds = self.recommender(users, items)
             eval_loss = self.loss_fn(preds, ratings).item()
-            user_item_ratings = np.empty((batch_size, batch_size))
-            true_item_ratings = np.empty((batch_size, batch_size))
+            user_item_ratings = np.empty((max_user_id, num_items))
+            true_item_ratings = np.empty((max_user_id, num_items))
             for user_id in users:
                 user_id = user_id.item()
                 # predict every item for every user
@@ -194,7 +106,9 @@ class RecommenderModule(nn.Module):
 
             personalization = personalization_score(user_item_ratings)
 
-            # roc_auc = roc_auc_score(user_rating_ref, user_rating_preds)
+            roc_auc = roc_auc_score(
+                user_rating_ref.astype(bool), user_rating_preds.astype(bool)
+            )
 
             # gives the index of the top k predictions for each sample
             log_dict = {
@@ -204,7 +118,7 @@ class RecommenderModule(nn.Module):
                 "prediction_coverage": prediction_coverage,
                 "catalog_coverage": catalog_coverage,
                 "personalization": personalization,
-                # "roc_auc": roc_auc,
+                "roc_auc": roc_auc,
             }
 
             print(log_dict)
@@ -237,11 +151,22 @@ def main(
         model = MatrixFactorizationModel(no_movies, no_users, Params.embedding_dim)
     elif Params.model_architecture == ModelArchitecture.NEURAL_CF:
         model = NeuralCFModel(
-            no_movies, no_users, layers=Params.layers, dropout=Params.dropout
+            no_movies,
+            no_users,
+            Params.layers,
+            Params.dropout,
+            Params.rating_format,
         )
     elif Params.model_architecture == ModelArchitecture.DEEP_FM:
         model = DeepFMModel(
             no_movies, no_users, layers=Params.layers, dropout=Params.dropout
+        )
+    elif Params.model_architecture == ModelArchitecture.WIDE_DEEP:
+        model = WideDeepModel(
+            no_movies,
+            no_users,
+            Params.embedding_dim,
+            Params.layers,
         )
     model.train()
     module = RecommenderModule(model, use_wandb)
