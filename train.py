@@ -2,6 +2,9 @@ from collections import defaultdict
 from enum import IntEnum
 from math import log2
 from typing import List, Optional
+import pandas as pd
+
+pd.options.display.float_format = "{:.2f}".format
 
 import fire
 import numpy as np
@@ -35,7 +38,7 @@ class Params:
     batch_size: int = 128
     eval_size: int = 100
     max_rows: int = 100000
-    model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
+    model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
@@ -59,15 +62,15 @@ class RecommenderModule(nn.Module):
             wandb.log({"train_loss": loss})
         return loss
 
-    def eval_step(self, batch, k: int = 10):
+    def eval_step(self, dataset: MovieLens20MDataset, batch, k: int = 10):
         with torch.no_grad():
             users, items, ratings = batch
-            max_user_id, num_items = users.max() + 1, items.shape[0]
+            max_user_id = users.max() + 1
             preds = self.recommender(users, items)
             eval_loss = self.loss_fn(preds, ratings).item()
-            user_item_ratings = np.empty((max_user_id, num_items))
-            true_item_ratings = np.empty((max_user_id, num_items))
-            for user_id in users:
+            user_item_ratings = np.empty((max_user_id, k))
+            true_item_ratings = np.empty((max_user_id, k))
+            for i, user_id in enumerate(users):
                 user_id = user_id.item()
                 # predict every item for every user
                 user_ids = torch.full_like(items, user_id)
@@ -77,6 +80,10 @@ class RecommenderModule(nn.Module):
 
                 true_top_k = torch.topk(ratings, k=k).indices
                 true_item_ratings[user_id] = true_top_k.numpy()
+                if i == 0:
+                    dataset.display_recommendation_output(
+                        user_id, top_k_preds, true_top_k
+                    )
 
             unique_item_catalog = list(set(items.tolist()))
             item_popularity = defaultdict(int)
@@ -106,9 +113,12 @@ class RecommenderModule(nn.Module):
 
             personalization = personalization_score(user_item_ratings)
 
-            roc_auc = roc_auc_score(
-                user_rating_ref.astype(bool), user_rating_preds.astype(bool)
-            )
+            ref_bool, preds_bool = user_rating_ref.astype(bool), user_rating_preds.astype(bool)
+            # Handle the case where all values are T or F
+            if len(np.unique(ref_bool)) == 2 and len(np.unique(preds_bool)) == 2:
+                roc_auc = roc_auc_score(
+                    ref_bool, preds_bool
+                )
 
             # gives the index of the top k predictions for each sample
             log_dict = {
@@ -134,7 +144,7 @@ def main(
 ):
     print("Loading dataset..")
     dataset = MovieLens20MDataset(
-        "ml-25m/ratings.csv", Params.rating_format, Params.max_rows, Params.max_users
+        "ml-25m", Params.rating_format, Params.max_rows, Params.max_users
     )
     train_size = len(dataset) - Params.eval_size
     no_users, no_movies = dataset.no_movies, dataset.no_users
@@ -171,7 +181,7 @@ def main(
     model.train()
     module = RecommenderModule(model, use_wandb)
     if use_wandb:
-        wandb.init(project="recsys")
+        wandb.init(project="recsys", config=vars(Params))
         wandb.watch(model)
     optimizer = torch.optim.AdamW(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
@@ -180,7 +190,7 @@ def main(
         if i % eval_every == 0:
             print("Running eval..")
             for j, batch in enumerate(eval_dataloader):
-                module.eval_step(batch, Params.eval_size)
+                module.eval_step(dataset, batch, 10)
                 break
         for j, batch in enumerate(train_dataloader):
             loss = module.training_step(batch)

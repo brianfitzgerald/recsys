@@ -7,3 +7,4 @@ fire
 scipy
 pandas
 scikit-learn
+tabulate
