@@ -45,7 +45,7 @@ class Params:
 
 
 class RecommenderModule(nn.Module):
-    def __init__(self, recommender: nn.Module, use_wandb: bool):
+    def __init__(self, recommender: RecModel, use_wandb: bool):
         super().__init__()
         self.recommender = recommender
         if Params.rating_format == RatingFormat.BINARY:
@@ -55,8 +55,8 @@ class RecommenderModule(nn.Module):
         self.use_wandb = use_wandb
 
     def training_step(self, batch):
-        users, items, ratings = batch
-        preds = self.recommender(users, items)
+        _, ratings = batch
+        preds = self.recommender(batch)
         loss = self.loss_fn(preds, ratings)
         if self.use_wandb:
             wandb.log({"train_loss": loss})
@@ -64,17 +64,19 @@ class RecommenderModule(nn.Module):
 
     def eval_step(self, dataset: MovieLens20MDataset, batch, k: int = 10):
         with torch.no_grad():
-            users, items, ratings = batch
-            max_user_id = users.max() + 1
-            preds = self.recommender(users, items)
+            features, ratings = batch
+            users, items = features[:, 0], features[:, 1]
+            max_user_id = int(users.max().item() + 1)
+            preds = self.recommender(batch)
             eval_loss = self.loss_fn(preds, ratings).item()
             user_item_ratings = np.empty((max_user_id, k))
             true_item_ratings = np.empty((max_user_id, k))
             for i, user_id in enumerate(users):
-                user_id = user_id.item()
+                user_id = user_id.int().item()
                 # predict every item for every user
                 user_ids = torch.full_like(items, user_id)
-                user_preds = self.recommender(user_ids, items)
+                user_batch = torch.stack([user_ids, items], dim=1)
+                user_preds = self.recommender((user_batch, None))
                 top_k_preds = torch.topk(user_preds, k=k).indices
                 user_item_ratings[user_id] = top_k_preds.numpy()
 
@@ -113,12 +115,12 @@ class RecommenderModule(nn.Module):
 
             personalization = personalization_score(user_item_ratings)
 
-            ref_bool, preds_bool = user_rating_ref.astype(bool), user_rating_preds.astype(bool)
+            ref_bool, preds_bool = user_rating_ref.astype(
+                bool
+            ), user_rating_preds.astype(bool)
             # Handle the case where all values are T or F
             if len(np.unique(ref_bool)) == 2 and len(np.unique(preds_bool)) == 2:
-                roc_auc = roc_auc_score(
-                    ref_bool, preds_bool
-                )
+                roc_auc = roc_auc_score(ref_bool, preds_bool)
 
             # gives the index of the top k predictions for each sample
             log_dict = {
@@ -147,7 +149,6 @@ def main(
         "ml-25m", Params.rating_format, Params.max_rows, Params.max_users
     )
     train_size = len(dataset) - Params.eval_size
-    no_users, no_movies = dataset.no_movies, dataset.no_users
     train_dataset, eval_dataset = torch.utils.data.random_split(
         dataset, [train_size, Params.eval_size]
     )
@@ -157,27 +158,10 @@ def main(
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=Params.eval_size, shuffle=False
     )
-    if Params.model_architecture == ModelArchitecture.MATRIX_FACTORIZATION:
-        model = MatrixFactorizationModel(no_movies, no_users, Params.embedding_dim)
-    elif Params.model_architecture == ModelArchitecture.NEURAL_CF:
-        model = NeuralCFModel(
-            no_movies,
-            no_users,
-            Params.layers,
-            Params.dropout,
-            Params.rating_format,
-        )
-    elif Params.model_architecture == ModelArchitecture.DEEP_FM:
-        model = DeepFMModel(
-            no_movies, no_users, layers=Params.layers, dropout=Params.dropout
-        )
-    elif Params.model_architecture == ModelArchitecture.WIDE_DEEP:
-        model = WideDeepModel(
-            no_movies,
-            no_users,
-            Params.embedding_dim,
-            Params.layers,
-        )
+    model_cls: RecModel = models_dict[Params.model_architecture]
+    model: RecModel = model_cls(
+        dataset.emb_columns, dataset.feature_sizes, Params.embedding_dim
+    )
     model.train()
     module = RecommenderModule(model, use_wandb)
     if use_wandb:

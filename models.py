@@ -15,39 +15,53 @@ class ModelArchitecture(IntEnum):
     WIDE_DEEP = 4
 
 
-def create_embedding_dict(
-    feature_counts: List[int], emb_columns: List[str], embedding_dim: int
-) -> Tuple[nn.ModuleDict, int]:
-    emb_dict = {}
-    for i, col_name in enumerate(emb_columns):
-        emb_dict[col_name] = nn.Embedding(feature_counts[i], embedding_dim)
-    emb_dict = nn.ModuleDict(emb_dict)
-    return emb_dict, embedding_dim * len(emb_columns)
-
-def concat_embeddings(input, emb_dict: nn.ModuleDict):
-    embeddings = []
-    for v in emb_dict.values():
-        embeddings.append(v)
-    return torch.cat(embeddings, 1)
-
-class WideDeepModel(nn.Module):
+class RecModel(nn.Module):
     def __init__(
-        self, emb_dict: nn.ModuleDict, linear_in_size: int, layers: List[int]
-    ) -> None:
+        self,
+        emb_columns: List[str],
+        feature_sizes: List[int],
+        embedding_dim: int,
+    ):
         super().__init__()
-        
-        self.fc_layers = torch.nn.ModuleList()
-        self.embeddings = create_embedding_dict(emb_dict)
 
-        self.linear_layer = torch.nn.Linear(linear_in_size, 1)
+        emb_dict = {}
+        self.emb_columns = emb_columns
+        for i, col_name in enumerate(emb_columns):
+            emb_dict[col_name] = nn.Embedding(feature_sizes[i], embedding_dim)
+        emb_dict = nn.ModuleDict(emb_dict)
+        self.emb_dict = emb_dict
+        self.emb_in_size = embedding_dim * len(emb_columns)
+
+    def get_feature_embeddings(self, batch, concat=True):
+        features, _ = batch
+        embeddings = []
+        for i, feature_name in enumerate(self.emb_columns):
+            emb = self.emb_dict[feature_name]
+            feature_column = features[:, i].to(torch.int64)
+            embedded_column = emb(feature_column)
+            embeddings.append(embedded_column)
+        embeddings = torch.stack(embeddings, dim=1).squeeze()
+        if concat:
+            embeddings = embeddings.view(-1, self.emb_in_size)
+        return embeddings
+        
+
+
+class WideDeepModel(RecModel):
+    def __init__(self, layers: List[int]) -> None:
+        super().__init__()
+
+        self.fc_layers = torch.nn.ModuleList()
+
+        self.linear_layer = torch.nn.Linear(self.emb_in_size, 1)
 
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
             self.fc_layers.append(torch.nn.Linear(in_size, out_size))
             self.fc_layers.append(torch.nn.ReLU())
             self.fc_layers.append(torch.nn.Dropout(0.1))
 
-    def forward(self, users, items):
-        emb_cat = concat_embeddings(emb_dict)
+    def forward(self, batch):
+        emb_cat = self.get_feature_embeddings(batch)
         x = x + self.linear_layer(emb_cat)
         x = self.fc_layers(x)
         x = x + get_fm_loss(emb_cat)
@@ -55,13 +69,9 @@ class WideDeepModel(nn.Module):
         return x
 
 
-class DeepFMModel(nn.Module):
-    def __init__(
-        self, n_users: int, n_movies: int, embedding_dim: int, layers: List[int]
-    ) -> None:
+class DeepFMModel(RecModel):
+    def __init__(self, layers: List[int]) -> None:
         super().__init__()
-        self.user_embedding = nn.Embedding(n_users, embedding_dim)
-        self.item_embedding = nn.Embedding(n_movies, embedding_dim)
         self.fc_layers = torch.nn.ModuleList()
 
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
@@ -69,10 +79,8 @@ class DeepFMModel(nn.Module):
             self.fc_layers.append(torch.nn.ReLU())
             self.fc_layers.append(torch.nn.Dropout(0.1))
 
-    def forward(self, users, items):
-        user_emb = self.user_embedding(users)
-        item_emb = self.item_embedding(items)
-        emb_cat = torch.cat([user_emb, item_emb], 1)
+    def forward(self, batch):
+        emb_cat = self.get_feature_embeddings(batch)
         x = self.fc_layers(x)
         x = x + get_fm_loss(emb_cat)
         x = torch.sigmoid(x)
@@ -88,25 +96,17 @@ def get_fm_loss(emb_cat: torch.Tensor):
     return cross_term
 
 
-class MatrixFactorizationModel(nn.Module):
-    def __init__(self, n_users: int, n_movies: int, embedding_dim: int) -> None:
-        super().__init__()
-        self.user_embedding = nn.Embedding(n_users, embedding_dim)
-        self.item_embedding = nn.Embedding(n_movies, embedding_dim)
-
-    def forward(self, users, items):
-        user_emb = self.user_embedding(users)
-        item_emb = self.item_embedding(items)
-        interaction = torch.sum(user_emb * item_emb, dim=1)
+class MatrixFactorizationModel(RecModel):
+    def forward(self, batch):
+        embeddings = self.get_feature_embeddings(batch, concat=False)
+        interaction = torch.sum(embeddings[:, 0, :] * embeddings[:, 1, :], dim=1)
         interaction = torch.sigmoid(interaction)
         return interaction
 
 
-class NeuralCFModel(nn.Module):
+class NeuralCFModel(RecModel):
     def __init__(
         self,
-        n_users: int,
-        n_movies: int,
         layers: List[int],
         dropout: float,
         rating_format: RatingFormat,
@@ -114,9 +114,6 @@ class NeuralCFModel(nn.Module):
         super().__init__()
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
-        embedding_dim = int(layers[0] / 2)
-        self.user_embedding = nn.Embedding(n_users, embedding_dim)
-        self.item_embedding = nn.Embedding(n_movies, embedding_dim)
         self.dropout = dropout
         self.rating_format = rating_format
 
@@ -129,10 +126,8 @@ class NeuralCFModel(nn.Module):
         # 1 is the output dimension
         self.output_layer = torch.nn.Linear(layers[-1], 1)
 
-    def forward(self, users, items):
-        user_emb = self.user_embedding(users)
-        item_emb = self.item_embedding(items)
-        x = torch.cat([user_emb, item_emb], 1)
+    def forward(self, batch):
+        x = self.get_feature_embeddings(batch)
         x = self.bn(x)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
@@ -142,3 +137,11 @@ class NeuralCFModel(nn.Module):
         if self.rating_format == RatingFormat.BINARY:
             rating = torch.sigmoid(rating)
         return rating.squeeze(1).float()
+
+
+models_dict = {
+    ModelArchitecture.MATRIX_FACTORIZATION: MatrixFactorizationModel,
+    ModelArchitecture.NEURAL_CF: NeuralCFModel,
+    ModelArchitecture.DEEP_FM: DeepFMModel,
+    ModelArchitecture.WIDE_DEEP: WideDeepModel,
+}

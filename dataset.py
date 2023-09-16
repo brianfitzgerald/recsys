@@ -36,9 +36,14 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         max_rows: int = 10000,
         max_users: int = None,
     ):
+
+        self.emb_columns: List[str] = ["userId", "movieId"]
+        self.pred_column: str = "rating"
+
         ratings_data = pd.read_csv(
             os.path.join(dataset_path, "ratings.csv"), sep=",", header="infer", nrows=max_rows
-        ).to_numpy()[:, :3]
+        )
+        self.feature_sizes: List[int] = [ratings_data[x].max() + 1 for x in self.emb_columns]
 
         self.movie_data = pd.read_csv(os.path.join(dataset_path, "movies.csv"), sep=",", engine="pyarrow", header="infer")
 
@@ -52,11 +57,11 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
             ]
             ratings_data = ratings_from_first_n_users
 
-        self.no_users = np.max(ratings_data[:, 0].astype(np.int64)) + 1
-        self.no_movies = np.max(ratings_data[:, 1].astype(np.int64)) + 1
-        self.no_samples = len(ratings_data)
+        no_users = self.ratings_data["userId"].max()
+        no_movies = self.ratings_data["movieId"].max()
+        self.no_samples = self.ratings_data.shape[0]
         print(
-            f"Number of users: {self.no_users} | Number of movies: {self.no_movies} | Number of samples: {self.no_samples}"
+            f"Number of users: {no_users} | Number of movies: {no_movies} | Number of samples: {self.no_samples}"
         )
 
         self.return_format = return_format
@@ -76,12 +81,9 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         return self.no_samples
 
     def __getitem__(self, index):
-        sample = self.ratings_data[index]
-        rating = sample[2].astype(np.float32)
+        sample = self.ratings_data.iloc[index]
+        rating = sample["rating"].astype(np.float32)
         if self.return_format == RatingFormat.BINARY:
-            rating = rating >= self.neg_threshold
-        return (
-            sample[0].astype(np.int64),
-            sample[1].astype(np.int64),
-            rating.astype(np.float32),
-        )
+            rating = (rating >= self.neg_threshold).astype(np.float32)
+        features = sample[self.emb_columns].to_numpy()
+        return features, rating
