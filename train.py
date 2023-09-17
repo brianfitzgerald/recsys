@@ -28,21 +28,20 @@ class DatasetSource(IntEnum):
 
 
 class Params:
-    learning_rate: int = 5e-4
+    learning_rate: int = 1e-6
     weight_decay: float = 1e-5
 
-    # only used for MF
     embedding_dim: int = 32
     dropout: float = 0.2
-    batch_size: int = 64
+    batch_size: int = 2
     eval_size: int = 10
-    max_rows: int = 1000000
-    model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
+    max_rows: int = 100
+    model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
     rating_format: RatingFormat = RatingFormat.BINARY
-    max_users: Optional[int] = 100
+    max_users: Optional[int] = None
 
-    do_eval: bool = True
+    do_eval: bool = False
 
 
 class RecommenderModule(nn.Module):
@@ -141,7 +140,7 @@ class RecommenderModule(nn.Module):
 
 def main(
     use_wandb: bool = False,
-    num_epochs: int = 100,
+    num_epochs: int = 500,
     eval_every: int = 1,
     max_batches: int = 100,
 ):
@@ -168,9 +167,12 @@ def main(
     if use_wandb:
         wandb.init(project="recsys", config=vars(Params()))
         wandb.watch(model)
-    optimizer = torch.optim.AdamW(
-        module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
-    )
+    if Params.model_architecture == ModelArchitecture.MATRIX_FACTORIZATION:
+        optimizer = torch.optim.SGD(module.parameters(), lr=Params.learning_rate)
+    else:
+        optimizer = torch.optim.AdamW(
+            module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
+        )
     for i in range(num_epochs):
         if i % eval_every == 0 and Params.do_eval:
             print("Running eval..")
@@ -178,8 +180,8 @@ def main(
                 module.eval_step(dataset, batch, 10)
                 break
         for j, batch in enumerate(train_dataloader):
-            loss = module.training_step(batch)
             optimizer.zero_grad()
+            loss = module.training_step(batch)
             loss.backward()
             optimizer.step()
 
