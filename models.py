@@ -47,17 +47,14 @@ class RecModel(nn.Module):
         if concat:
             embeddings = embeddings.view(-1, self.emb_in_size)
         return embeddings
-        
 
 
 class WideDeepModel(RecModel):
     def __init__(self, *args, **kwargs) -> None:
-        print(args)
         super().__init__(*args, **kwargs)
 
-
         self.wide_layer = torch.nn.Linear(self.emb_in_size, 1)
-        layers = [self.emb_in_size, 64, 32, 16, 8]
+        layers = [64, 32, 16, 8]
 
         self.deep_layers = torch.nn.ModuleList()
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
@@ -65,31 +62,40 @@ class WideDeepModel(RecModel):
             self.deep_layers.append(torch.nn.ReLU())
             self.deep_layers.append(torch.nn.Dropout(0.1))
         self.deep_layers = torch.nn.Sequential(*self.deep_layers)
+        self.deep_output_layer = torch.nn.Linear(layers[-1], 1)
 
     def forward(self, batch):
         emb_cat = self.get_feature_embeddings(batch)
-        x = self.wide_layer(emb_cat)
-        x = self.deep_layers(x)
-        x = x + get_fm_loss(emb_cat)
-        x = torch.sigmoid(x)
+        wide_out = self.wide_layer(emb_cat)
+        deep_out = self.deep_layers(emb_cat)
+        deep_out = self.deep_output_layer(deep_out)
+        x = wide_out + deep_out
+        if self.rating_format == RatingFormat.BINARY:
+            x = torch.sigmoid(x).squeeze(1)
         return x
 
 
 class DeepFMModel(RecModel):
-    def __init__(self, layers: List[int]) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.fc_layers = torch.nn.ModuleList()
+        layers = [64, 32, 16, 8]
 
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
             self.fc_layers.append(torch.nn.Linear(in_size, out_size))
             self.fc_layers.append(torch.nn.ReLU())
             self.fc_layers.append(torch.nn.Dropout(0.1))
 
+        self.fc_layers = torch.nn.Sequential(*self.fc_layers)
+        self.output_layer = torch.nn.Linear(layers[-1], 1)
+
     def forward(self, batch):
         emb_cat = self.get_feature_embeddings(batch)
         x = self.fc_layers(x)
         x = x + get_fm_loss(emb_cat)
-        x = torch.sigmoid(x)
+        x = self.output_layer(x)
+        if self.rating_format == RatingFormat.BINARY:
+            x = torch.sigmoid(x).squeeze(1)
         return x
 
 
@@ -145,7 +151,8 @@ class NeuralCFModel(RecModel):
         rating = self.output_layer(x)
         if self.rating_format == RatingFormat.BINARY:
             rating = torch.sigmoid(rating)
-        return rating.squeeze(1).float()
+        rating = rating.squeeze(1).float()
+        return rating
 
 
 models_dict = {

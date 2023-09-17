@@ -17,6 +17,7 @@ from models import *
 from sklearn.metrics import roc_auc_score
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 
 torch.manual_seed(0)
 
@@ -28,7 +29,7 @@ class DatasetSource(IntEnum):
 
 
 class Params:
-    learning_rate: int = 5e-2
+    learning_rate: int = 5e-3
     weight_decay: float = 1e-5
 
     embedding_dim: int = 32
@@ -36,13 +37,13 @@ class Params:
     batch_size: int = 32
     eval_size: int = 10
     max_rows: int = 1000
-    model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
+    model_architecture: ModelArchitecture = ModelArchitecture.WIDE_DEEP
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
     rating_format: RatingFormat = RatingFormat.RATING
     max_users: Optional[int] = None
     num_epochs: int = 100
 
-    do_eval: bool = True
+    do_eval: bool = False
     eval_every: int = 1
     max_batches: int = 10
 
@@ -170,10 +171,10 @@ def main(
         dataset, [train_size, Params.eval_size]
     )
     train_dataloader = DataLoader(
-        train_dataset, batch_size=Params.batch_size, shuffle=True, num_workers=4
+        train_dataset, batch_size=Params.batch_size, shuffle=True, num_workers=8
     )
     eval_dataloader = DataLoader(
-        eval_dataset, batch_size=Params.eval_size, shuffle=True, num_workers=4
+        eval_dataset, batch_size=Params.eval_size, shuffle=True, num_workers=8
     )
     model_cls: RecModel = models_dict[Params.model_architecture]
     model: RecModel = model_cls(
@@ -190,6 +191,7 @@ def main(
     optimizer = torch.optim.AdamW(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
+    scheduler = CosineAnnealingLR(optimizer, T_max=Params.num_epochs, eta_min=1e-6)
     for i in range(Params.num_epochs):
         if i % Params.eval_every == 0 and Params.do_eval:
             print("Running eval..")
@@ -212,14 +214,16 @@ def main(
                 wandb.log({"total_norm": total_norm.item()})
 
             print(
-                f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}"
+                f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}, lr {scheduler.get_last_lr()[0]:03.5f}"
             )
 
             if j > Params.max_batches:
                 break
 
-            if Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:
-                torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
+            # if Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:
+            #     torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
+        scheduler.step()
+
     wandb.finish()
 
 

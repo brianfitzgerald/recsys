@@ -8,6 +8,7 @@ from tabulate import tabulate
 import os
 import sys
 
+
 class RatingFormat(IntEnum):
     BINARY = 1
     RATING = 2
@@ -36,23 +37,35 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         max_rows: int = sys.maxsize,
         max_users: int = None,
     ):
-
         self.emb_columns: List[str] = ["userId", "movieId"]
         self.pred_column: str = "rating"
 
         ratings_data = pd.read_csv(
-            os.path.join(dataset_path, "ratings.csv"), sep=",", header="infer", nrows=max_rows
+            os.path.join(dataset_path, "ratings.csv"),
+            sep=",",
+            header="infer",
+            nrows=max_rows,
         ).dropna()
-        self.feature_sizes: List[int] = [ratings_data[x].max() + 1 for x in self.emb_columns]
+        
+        self.feature_sizes: List[int] = [
+            ratings_data[x].max() + 1 for x in self.emb_columns
+        ]
 
-        self.movie_data = pd.read_csv(os.path.join(dataset_path, "movies.csv"), sep=",", engine="pyarrow", header="infer")
+        self.movie_data = pd.read_csv(
+            os.path.join(dataset_path, "movies.csv"),
+            sep=",",
+            engine="pyarrow",
+            header="infer",
+        )
 
         self.ratings_data = ratings_data
         self.neg_threshold = 2.5
 
         if max_users is not None:
             first_n_users = ratings_data["userId"].unique()[:max_users]
-            ratings_from_first_n_users = ratings_data[ratings_data["userId"].isin(first_n_users)]
+            ratings_from_first_n_users = ratings_data[
+                ratings_data["userId"].isin(first_n_users)
+            ]
             ratings_data = ratings_from_first_n_users
 
         no_users = self.ratings_data["userId"].max()
