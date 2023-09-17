@@ -28,12 +28,12 @@ class DatasetSource(IntEnum):
 
 
 class Params:
-    learning_rate: int = 2e-1
+    learning_rate: int = 5e-2
     weight_decay: float = 1e-5
 
     embedding_dim: int = 32
     dropout: float = 0.2
-    batch_size: int = 128
+    batch_size: int = 32
     eval_size: int = 10
     max_rows: int = 1000
     model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
@@ -43,13 +43,31 @@ class Params:
     num_epochs: int = 100
 
     do_eval: bool = True
+    eval_every: int = 1
+    max_batches: int = 10
+
+    @classmethod
+    def default_values(cls):
+        instance = cls()
+        attrs_dict = {
+            attr: getattr(instance, attr)
+            for attr in dir(instance)
+            if not callable(getattr(instance, attr)) and not attr.startswith("__")
+        }
+        for key, value in attrs_dict.items():
+            if isinstance(value, IntEnum):
+                attrs_dict[key] = value.name
+        return attrs_dict
 
 
 class RecommenderModule(nn.Module):
     def __init__(self, recommender: RecModel, use_wandb: bool):
         super().__init__()
         self.recommender = recommender
-        if Params.rating_format == RatingFormat.BINARY and Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:
+        if (
+            Params.rating_format == RatingFormat.BINARY
+            and Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION
+        ):
             self.loss_fn = torch.nn.BCELoss()
         else:
             self.loss_fn = torch.nn.MSELoss()
@@ -142,8 +160,6 @@ class RecommenderModule(nn.Module):
 
 def main(
     use_wandb: bool = False,
-    eval_every: int = 1,
-    max_batches: int = 100,
 ):
     print("Loading dataset..")
     dataset = MovieLens20MDataset(
@@ -161,18 +177,21 @@ def main(
     )
     model_cls: RecModel = models_dict[Params.model_architecture]
     model: RecModel = model_cls(
-        dataset.emb_columns, dataset.feature_sizes, Params.embedding_dim, Params.rating_format
+        dataset.emb_columns,
+        dataset.feature_sizes,
+        Params.embedding_dim,
+        Params.rating_format,
     )
     model.train()
     module = RecommenderModule(model, use_wandb)
     if use_wandb:
-        wandb.init(project="recsys", config=vars(Params()))
+        wandb.init(project="recsys", config=Params.default_values())
         wandb.watch(model)
     optimizer = torch.optim.AdamW(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
     for i in range(Params.num_epochs):
-        if i % eval_every == 0 and Params.do_eval:
+        if i % Params.eval_every == 0 and Params.do_eval:
             print("Running eval..")
             for j, batch in enumerate(eval_dataloader):
                 module.eval_step(dataset, batch, 10)
@@ -196,7 +215,7 @@ def main(
                 f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}"
             )
 
-            if j > max_batches:
+            if j > Params.max_batches:
                 break
 
             if Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:
