@@ -30,18 +30,19 @@ class DatasetSource(IntEnum):
 class Params:
     learning_rate: int = 5e-4
     weight_decay: float = 1e-5
-    layers: List[int] = [64, 32, 16, 8]
 
     # only used for MF
     embedding_dim: int = 32
     dropout: float = 0.2
-    batch_size: int = 128
-    eval_size: int = 100
-    max_rows: int = 100000
-    model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
+    batch_size: int = 64
+    eval_size: int = 10
+    max_rows: int = 1000000
+    model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
     rating_format: RatingFormat = RatingFormat.BINARY
-    max_users: Optional[int] = None
+    max_users: Optional[int] = 100
+
+    do_eval: bool = True
 
 
 class RecommenderModule(nn.Module):
@@ -153,25 +154,25 @@ def main(
         dataset, [train_size, Params.eval_size]
     )
     train_dataloader = DataLoader(
-        train_dataset, batch_size=Params.batch_size, shuffle=False, drop_last=True
+        train_dataset, batch_size=Params.batch_size, shuffle=True, drop_last=True
     )
     eval_dataloader = DataLoader(
-        eval_dataset, batch_size=Params.eval_size, shuffle=False
+        eval_dataset, batch_size=Params.eval_size, shuffle=True
     )
     model_cls: RecModel = models_dict[Params.model_architecture]
     model: RecModel = model_cls(
-        dataset.emb_columns, dataset.feature_sizes, Params.embedding_dim
+        dataset.emb_columns, dataset.feature_sizes, Params.embedding_dim, Params.rating_format
     )
     model.train()
     module = RecommenderModule(model, use_wandb)
     if use_wandb:
-        wandb.init(project="recsys", config=vars(Params))
+        wandb.init(project="recsys", config=vars(Params()))
         wandb.watch(model)
     optimizer = torch.optim.AdamW(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
     for i in range(num_epochs):
-        if i % eval_every == 0:
+        if i % eval_every == 0 and Params.do_eval:
             print("Running eval..")
             for j, batch in enumerate(eval_dataloader):
                 module.eval_step(dataset, batch, 10)

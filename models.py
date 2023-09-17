@@ -21,8 +21,11 @@ class RecModel(nn.Module):
         emb_columns: List[str],
         feature_sizes: List[int],
         embedding_dim: int,
+        rating_format: RatingFormat,
     ):
         super().__init__()
+
+        self.rating_format = rating_format
 
         emb_dict = {}
         self.emb_columns = emb_columns
@@ -48,22 +51,25 @@ class RecModel(nn.Module):
 
 
 class WideDeepModel(RecModel):
-    def __init__(self, layers: List[int]) -> None:
-        super().__init__()
+    def __init__(self, *args, **kwargs) -> None:
+        print(args)
+        super().__init__(*args, **kwargs)
 
-        self.fc_layers = torch.nn.ModuleList()
 
-        self.linear_layer = torch.nn.Linear(self.emb_in_size, 1)
+        self.wide_layer = torch.nn.Linear(self.emb_in_size, 1)
+        layers = [self.emb_in_size, 64, 32, 16, 8]
 
+        self.deep_layers = torch.nn.ModuleList()
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
-            self.fc_layers.append(torch.nn.ReLU())
-            self.fc_layers.append(torch.nn.Dropout(0.1))
+            self.deep_layers.append(torch.nn.Linear(in_size, out_size))
+            self.deep_layers.append(torch.nn.ReLU())
+            self.deep_layers.append(torch.nn.Dropout(0.1))
+        self.deep_layers = torch.nn.Sequential(*self.deep_layers)
 
     def forward(self, batch):
         emb_cat = self.get_feature_embeddings(batch)
-        x = x + self.linear_layer(emb_cat)
-        x = self.fc_layers(x)
+        x = self.wide_layer(emb_cat)
+        x = self.deep_layers(x)
         x = x + get_fm_loss(emb_cat)
         x = torch.sigmoid(x)
         return x
@@ -99,7 +105,8 @@ def get_fm_loss(emb_cat: torch.Tensor):
 class MatrixFactorizationModel(RecModel):
     def forward(self, batch):
         embeddings = self.get_feature_embeddings(batch, concat=False)
-        interaction = torch.sum(embeddings[:, 0, :] * embeddings[:, 1, :], dim=1)
+        embeddings_prod = torch.prod(embeddings, dim=1)
+        interaction = torch.sum(embeddings_prod, dim=1)
         interaction = torch.sigmoid(interaction)
         return interaction
 
@@ -107,14 +114,15 @@ class MatrixFactorizationModel(RecModel):
 class NeuralCFModel(RecModel):
     def __init__(
         self,
-        layers: List[int],
-        dropout: float,
+        emb_columns: List[str],
+        feature_sizes: List[str],
+        embedding_dim: int,
         rating_format: RatingFormat,
+        layers: List[int] = [64, 32, 16, 8],
     ):
-        super().__init__()
+        super().__init__(emb_columns, feature_sizes, embedding_dim, rating_format)
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
-        self.dropout = dropout
         self.rating_format = rating_format
 
         self.bn = nn.BatchNorm1d(layers[0])
@@ -132,7 +140,7 @@ class NeuralCFModel(RecModel):
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = F.dropout(x, p=0.1, training=self.training)
         rating = self.output_layer(x)
         if self.rating_format == RatingFormat.BINARY:
             rating = torch.sigmoid(rating)

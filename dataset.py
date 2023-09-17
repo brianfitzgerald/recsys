@@ -6,7 +6,7 @@ from numpy.random import choice, randint
 from typing import List
 from tabulate import tabulate
 import os
-
+import sys
 
 class RatingFormat(IntEnum):
     BINARY = 1
@@ -33,7 +33,7 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         self,
         dataset_path: str,
         return_format: RatingFormat,
-        max_rows: int = 10000,
+        max_rows: int = sys.maxsize,
         max_users: int = None,
     ):
 
@@ -51,10 +51,8 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         self.neg_threshold = 2.5
 
         if max_users is not None:
-            first_n_users = np.unique(ratings_data[:, 0])[:max_users]
-            ratings_from_first_n_users = ratings_data[
-                np.where(np.isin(ratings_data[:, 0], first_n_users))
-            ]
+            first_n_users = ratings_data["userId"].unique()[:max_users]
+            ratings_from_first_n_users = ratings_data[ratings_data["userId"].isin(first_n_users)]
             ratings_data = ratings_from_first_n_users
 
         no_users = self.ratings_data["userId"].max()
@@ -86,4 +84,5 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         if self.return_format == RatingFormat.BINARY:
             rating = (rating >= self.neg_threshold).astype(np.float32)
         features = sample[self.emb_columns].to_numpy()
+        # print('index', index, 'features', features, 'rating', rating)
         return features, rating
