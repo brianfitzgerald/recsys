@@ -46,7 +46,16 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
             header="infer",
             nrows=max_rows,
         ).dropna()
-        
+
+        genres_data = pd.read_csv(
+            os.path.join(dataset_path, "movies.csv"),
+            sep=",",
+            engine="pyarrow",
+            header="infer",
+        )
+        primary_genre_per_movie = genres_data["genres"].str.split("|").str[0]
+        self.movie_genres = pd.concat([genres_data["movieId"], primary_genre_per_movie])
+
         self.feature_sizes: List[int] = [
             ratings_data[x].max() + 1 for x in self.emb_columns
         ]
