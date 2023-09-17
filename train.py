@@ -35,7 +35,7 @@ class Params:
     embedding_dim: int = 32
     dropout: float = 0.2
     batch_size: int = 32
-    eval_size: int = 10
+    eval_size: int = 100
     max_rows: int = 1000
     model_architecture: ModelArchitecture = ModelArchitecture.WIDE_DEEP
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
@@ -43,7 +43,7 @@ class Params:
     max_users: Optional[int] = None
     num_epochs: int = 100
 
-    do_eval: bool = False
+    do_eval: bool = True
     eval_every: int = 1
     max_batches: int = 10
 
@@ -76,7 +76,7 @@ class RecommenderModule(nn.Module):
 
     def training_step(self, batch):
         _, ratings = batch
-        preds = self.recommender(batch)
+        preds = self.recommender(batch).squeeze()
         loss = self.loss_fn(preds, ratings)
         # print(f"Loss: {loss.item():03.3f} preds: {preds.tolist()} ratings: {ratings.tolist()}")
         if self.use_wandb:
@@ -88,7 +88,7 @@ class RecommenderModule(nn.Module):
             features, ratings = batch
             users, items = features[:, 0], features[:, 1]
             max_user_id = int(users.max().item() + 1)
-            preds = self.recommender(batch)
+            preds = self.recommender(batch).squeeze()
             eval_loss = self.loss_fn(preds, ratings).item()
             user_item_ratings = np.empty((max_user_id, k))
             true_item_ratings = np.empty((max_user_id, k))
@@ -97,7 +97,7 @@ class RecommenderModule(nn.Module):
                 # predict every item for every user
                 user_ids = torch.full_like(items, user_id)
                 user_batch = torch.stack([user_ids, items], dim=1)
-                user_preds = self.recommender((user_batch, None))
+                user_preds = self.recommender((user_batch, None)).squeeze()
                 top_k_preds = torch.topk(user_preds, k=k).indices
                 user_item_ratings[user_id] = top_k_preds.numpy()
 
@@ -210,11 +210,13 @@ def main(
                 if param.grad is not None
             ]
             total_norm = torch.cat(grads).norm()
+            learning_rate = scheduler.get_last_lr()[0]
             if use_wandb:
-                wandb.log({"total_norm": total_norm.item()})
+                wandb.log({"total_norm": total_norm.item(), "lr": learning_rate})
+
 
             print(
-                f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}, lr {scheduler.get_last_lr()[0]:03.5f}"
+                f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}, lr {learning_rate:03.5f}"
             )
 
             if j > Params.max_batches:

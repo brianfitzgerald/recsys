@@ -71,7 +71,7 @@ class WideDeepModel(RecModel):
         deep_out = self.deep_output_layer(deep_out)
         x = wide_out + deep_out
         if self.rating_format == RatingFormat.BINARY:
-            x = torch.sigmoid(x).squeeze(1)
+            x = torch.sigmoid(x)
         return x
 
 
@@ -95,7 +95,7 @@ class DeepFMModel(RecModel):
         x = x + get_fm_loss(emb_cat)
         x = self.output_layer(x)
         if self.rating_format == RatingFormat.BINARY:
-            x = torch.sigmoid(x).squeeze(1)
+            x = torch.sigmoid(x)
         return x
 
 
@@ -151,7 +151,6 @@ class NeuralCFModel(RecModel):
         rating = self.output_layer(x)
         if self.rating_format == RatingFormat.BINARY:
             rating = torch.sigmoid(rating)
-        rating = rating.squeeze(1).float()
         return rating
 
 
