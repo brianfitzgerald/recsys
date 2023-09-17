@@ -10,7 +10,7 @@ import sys
 
 class RatingFormat(IntEnum):
     BINARY = 1
-    SCORE = 2
+    RATING = 2
 
 
 class MovieLens20MDataset(torch.utils.data.Dataset):

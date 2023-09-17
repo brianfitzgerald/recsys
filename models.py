@@ -105,9 +105,10 @@ def get_fm_loss(emb_cat: torch.Tensor):
 class MatrixFactorizationModel(RecModel):
     def forward(self, batch):
         embeddings = self.get_feature_embeddings(batch, concat=False)
+        if len(embeddings.shape) == 2:
+            embeddings = embeddings.unsqueeze(0)
         embeddings_prod = torch.prod(embeddings, dim=1)
         interaction = torch.sum(embeddings_prod, dim=1)
-        interaction = torch.sigmoid(interaction)
         return interaction
 
 

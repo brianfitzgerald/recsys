@@ -28,27 +28,28 @@ class DatasetSource(IntEnum):
 
 
 class Params:
-    learning_rate: int = 1e-6
+    learning_rate: int = 2e-1
     weight_decay: float = 1e-5
 
     embedding_dim: int = 32
     dropout: float = 0.2
-    batch_size: int = 2
+    batch_size: int = 128
     eval_size: int = 10
-    max_rows: int = 100
+    max_rows: int = 1000
     model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
-    rating_format: RatingFormat = RatingFormat.BINARY
+    rating_format: RatingFormat = RatingFormat.RATING
     max_users: Optional[int] = None
+    num_epochs: int = 100
 
-    do_eval: bool = False
+    do_eval: bool = True
 
 
 class RecommenderModule(nn.Module):
     def __init__(self, recommender: RecModel, use_wandb: bool):
         super().__init__()
         self.recommender = recommender
-        if Params.rating_format == RatingFormat.BINARY:
+        if Params.rating_format == RatingFormat.BINARY and Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:
             self.loss_fn = torch.nn.BCELoss()
         else:
             self.loss_fn = torch.nn.MSELoss()
@@ -58,6 +59,7 @@ class RecommenderModule(nn.Module):
         _, ratings = batch
         preds = self.recommender(batch)
         loss = self.loss_fn(preds, ratings)
+        # print(f"Loss: {loss.item():03.3f} preds: {preds.tolist()} ratings: {ratings.tolist()}")
         if self.use_wandb:
             wandb.log({"train_loss": loss})
         return loss
@@ -140,7 +142,6 @@ class RecommenderModule(nn.Module):
 
 def main(
     use_wandb: bool = False,
-    num_epochs: int = 500,
     eval_every: int = 1,
     max_batches: int = 100,
 ):
@@ -153,10 +154,10 @@ def main(
         dataset, [train_size, Params.eval_size]
     )
     train_dataloader = DataLoader(
-        train_dataset, batch_size=Params.batch_size, shuffle=True, drop_last=True
+        train_dataset, batch_size=Params.batch_size, shuffle=True, num_workers=4
     )
     eval_dataloader = DataLoader(
-        eval_dataset, batch_size=Params.eval_size, shuffle=True
+        eval_dataset, batch_size=Params.eval_size, shuffle=True, num_workers=4
     )
     model_cls: RecModel = models_dict[Params.model_architecture]
     model: RecModel = model_cls(
@@ -167,21 +168,18 @@ def main(
     if use_wandb:
         wandb.init(project="recsys", config=vars(Params()))
         wandb.watch(model)
-    if Params.model_architecture == ModelArchitecture.MATRIX_FACTORIZATION:
-        optimizer = torch.optim.SGD(module.parameters(), lr=Params.learning_rate)
-    else:
-        optimizer = torch.optim.AdamW(
-            module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
-        )
-    for i in range(num_epochs):
+    optimizer = torch.optim.AdamW(
+        module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
+    )
+    for i in range(Params.num_epochs):
         if i % eval_every == 0 and Params.do_eval:
             print("Running eval..")
             for j, batch in enumerate(eval_dataloader):
                 module.eval_step(dataset, batch, 10)
                 break
         for j, batch in enumerate(train_dataloader):
-            optimizer.zero_grad()
             loss = module.training_step(batch)
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
@@ -201,7 +199,9 @@ def main(
             if j > max_batches:
                 break
 
-            torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
+            if Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:
+                torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
+    wandb.finish()
 
 
 if __name__ == "__main__":
