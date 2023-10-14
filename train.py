@@ -2,6 +2,9 @@ from collections import defaultdict
 from enum import IntEnum
 from math import log2
 from typing import List, Optional
+import pandas as pd
+
+pd.options.display.float_format = "{:.2f}".format
 
 import fire
 import numpy as np
@@ -14,6 +17,7 @@ from models import *
 from sklearn.metrics import roc_auc_score
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 
 torch.manual_seed(0)
 
@@ -25,58 +29,84 @@ class DatasetSource(IntEnum):
 
 
 class Params:
-    learning_rate: int = 5e-4
+    learning_rate: int = 5e-3
     weight_decay: float = 1e-5
-    layers: List[int] = [64, 32, 16, 8]
 
-    # only used for MF
     embedding_dim: int = 32
     dropout: float = 0.2
-    batch_size: int = 128
+    batch_size: int = 32
     eval_size: int = 100
-    max_rows: int = 100000
-    model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
+    max_rows: int = 1000
+    model_architecture: ModelArchitecture = ModelArchitecture.WIDE_DEEP
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
-    rating_format: RatingFormat = RatingFormat.BINARY
+    rating_format: RatingFormat = RatingFormat.RATING
     max_users: Optional[int] = None
+    num_epochs: int = 100
+
+    do_eval: bool = True
+    eval_every: int = 1
+    max_batches: int = 10
+
+    @classmethod
+    def default_values(cls):
+        instance = cls()
+        attrs_dict = {
+            attr: getattr(instance, attr)
+            for attr in dir(instance)
+            if not callable(getattr(instance, attr)) and not attr.startswith("__")
+        }
+        for key, value in attrs_dict.items():
+            if isinstance(value, IntEnum):
+                attrs_dict[key] = value.name
+        return attrs_dict
 
 
 class RecommenderModule(nn.Module):
-    def __init__(self, recommender: nn.Module, use_wandb: bool):
+    def __init__(self, recommender: RecModel, use_wandb: bool):
         super().__init__()
         self.recommender = recommender
-        if Params.rating_format == RatingFormat.BINARY:
+        if (
+            Params.rating_format == RatingFormat.BINARY
+            and Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION
+        ):
             self.loss_fn = torch.nn.BCELoss()
         else:
             self.loss_fn = torch.nn.MSELoss()
         self.use_wandb = use_wandb
 
     def training_step(self, batch):
-        users, items, ratings = batch
-        preds = self.recommender(users, items)
+        _, ratings = batch
+        preds = self.recommender(batch).squeeze()
         loss = self.loss_fn(preds, ratings)
+        # print(f"Loss: {loss.item():03.3f} preds: {preds.tolist()} ratings: {ratings.tolist()}")
         if self.use_wandb:
             wandb.log({"train_loss": loss})
         return loss
 
-    def eval_step(self, batch, k: int = 10):
+    def eval_step(self, dataset: MovieLens20MDataset, batch, k: int = 10):
         with torch.no_grad():
-            users, items, ratings = batch
-            max_user_id, num_items = users.max() + 1, items.shape[0]
-            preds = self.recommender(users, items)
+            features, ratings = batch
+            users, items = features[:, 0], features[:, 1]
+            max_user_id = int(users.max().item() + 1)
+            preds = self.recommender(batch).squeeze()
             eval_loss = self.loss_fn(preds, ratings).item()
-            user_item_ratings = np.empty((max_user_id, num_items))
-            true_item_ratings = np.empty((max_user_id, num_items))
-            for user_id in users:
-                user_id = user_id.item()
+            user_item_ratings = np.empty((max_user_id, k))
+            true_item_ratings = np.empty((max_user_id, k))
+            for i, user_id in enumerate(users):
+                user_id = user_id.int().item()
                 # predict every item for every user
                 user_ids = torch.full_like(items, user_id)
-                user_preds = self.recommender(user_ids, items)
+                user_batch = torch.stack([user_ids, items], dim=1)
+                user_preds = self.recommender((user_batch, None)).squeeze()
                 top_k_preds = torch.topk(user_preds, k=k).indices
                 user_item_ratings[user_id] = top_k_preds.numpy()
 
                 true_top_k = torch.topk(ratings, k=k).indices
                 true_item_ratings[user_id] = true_top_k.numpy()
+                if i == 0:
+                    dataset.display_recommendation_output(
+                        user_id, top_k_preds, true_top_k
+                    )
 
             unique_item_catalog = list(set(items.tolist()))
             item_popularity = defaultdict(int)
@@ -106,9 +136,12 @@ class RecommenderModule(nn.Module):
 
             personalization = personalization_score(user_item_ratings)
 
-            roc_auc = roc_auc_score(
-                user_rating_ref.astype(bool), user_rating_preds.astype(bool)
-            )
+            ref_bool, preds_bool = user_rating_ref.astype(
+                bool
+            ), user_rating_preds.astype(bool)
+            # Handle the case where all values are T or F
+            if len(np.unique(ref_bool)) == 2 and len(np.unique(preds_bool)) == 2:
+                roc_auc = roc_auc_score(ref_bool, preds_bool)
 
             # gives the index of the top k predictions for each sample
             log_dict = {
@@ -128,59 +161,42 @@ class RecommenderModule(nn.Module):
 
 def main(
     use_wandb: bool = False,
-    num_epochs: int = 100,
-    eval_every: int = 1,
-    max_batches: int = 100,
 ):
     print("Loading dataset..")
     dataset = MovieLens20MDataset(
-        "ml-25m/ratings.csv", Params.rating_format, Params.max_rows, Params.max_users
+        "ml-25m", Params.rating_format, Params.max_rows, Params.max_users
     )
     train_size = len(dataset) - Params.eval_size
-    no_users, no_movies = dataset.no_movies, dataset.no_users
     train_dataset, eval_dataset = torch.utils.data.random_split(
         dataset, [train_size, Params.eval_size]
     )
     train_dataloader = DataLoader(
-        train_dataset, batch_size=Params.batch_size, shuffle=False, drop_last=True
+        train_dataset, batch_size=Params.batch_size, shuffle=True, num_workers=8
     )
     eval_dataloader = DataLoader(
-        eval_dataset, batch_size=Params.eval_size, shuffle=False
+        eval_dataset, batch_size=Params.eval_size, shuffle=True, num_workers=8
     )
-    if Params.model_architecture == ModelArchitecture.MATRIX_FACTORIZATION:
-        model = MatrixFactorizationModel(no_movies, no_users, Params.embedding_dim)
-    elif Params.model_architecture == ModelArchitecture.NEURAL_CF:
-        model = NeuralCFModel(
-            no_movies,
-            no_users,
-            Params.layers,
-            Params.dropout,
-            Params.rating_format,
-        )
-    elif Params.model_architecture == ModelArchitecture.DEEP_FM:
-        model = DeepFMModel(
-            no_movies, no_users, layers=Params.layers, dropout=Params.dropout
-        )
-    elif Params.model_architecture == ModelArchitecture.WIDE_DEEP:
-        model = WideDeepModel(
-            no_movies,
-            no_users,
-            Params.embedding_dim,
-            Params.layers,
-        )
+    model_cls: RecModel = models_dict[Params.model_architecture]
+    model: RecModel = model_cls(
+        dataset.emb_columns,
+        dataset.feature_sizes,
+        Params.embedding_dim,
+        Params.rating_format,
+    )
     model.train()
     module = RecommenderModule(model, use_wandb)
     if use_wandb:
-        wandb.init(project="recsys")
+        wandb.init(project="recsys", config=Params.default_values())
         wandb.watch(model)
     optimizer = torch.optim.AdamW(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
-    for i in range(num_epochs):
-        if i % eval_every == 0:
+    scheduler = CosineAnnealingLR(optimizer, T_max=Params.num_epochs, eta_min=1e-6)
+    for i in range(Params.num_epochs):
+        if i % Params.eval_every == 0 and Params.do_eval:
             print("Running eval..")
             for j, batch in enumerate(eval_dataloader):
-                module.eval_step(batch, Params.eval_size)
+                module.eval_step(dataset, batch, 10)
                 break
         for j, batch in enumerate(train_dataloader):
             loss = module.training_step(batch)
@@ -194,17 +210,23 @@ def main(
                 if param.grad is not None
             ]
             total_norm = torch.cat(grads).norm()
+            learning_rate = scheduler.get_last_lr()[0]
             if use_wandb:
-                wandb.log({"total_norm": total_norm.item()})
+                wandb.log({"total_norm": total_norm.item(), "lr": learning_rate})
+
 
             print(
-                f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}"
+                f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}, lr {learning_rate:03.5f}"
             )
 
-            if j > max_batches:
+            if j > Params.max_batches:
                 break
 
-            torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
+            # if Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:
+            #     torch.nn.utils.clip_grad_norm_(module.parameters(), 100)
+        scheduler.step()
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
