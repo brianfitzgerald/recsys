@@ -1,8 +1,11 @@
 from collections import defaultdict
 from enum import IntEnum
 from typing import Optional
+
 import pandas as pd
 from torch.optim import AdamW
+from torch.utils.data import Dataset
+
 from utils import get_available_device
 
 pd.options.display.float_format = "{:.2f}".format
@@ -11,13 +14,15 @@ import fire
 import numpy as np
 import torch
 import wandb
-from dataset import MovieLens20MDataset, RatingFormat, DatasetSource
-from metrics import *
-from models import *
 from sklearn.metrics import roc_auc_score
 from torch import nn
-from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import DataLoader
+
+from dataset import (BaseDataset, DatasetSource, MovieLens20MDataset,
+                     RatingFormat, datasets_dict)
+from metrics import *
+from models import *
 
 torch.manual_seed(0)
 
@@ -30,10 +35,10 @@ class Params:
     dropout: float = 0.2
     batch_size: int = 32
     eval_size: int = 100
-    max_rows: int = 1000
+    max_rows: Optional[int] = None
     model_architecture: ModelArchitecture = ModelArchitecture.WIDE_DEEP
-    dataset_source: DatasetSource = DatasetSource.MOVIELENS
-    rating_format: RatingFormat = RatingFormat.RATING
+    dataset_source: DatasetSource = DatasetSource.CRITEO
+    rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
     num_epochs: int = 100
 
@@ -158,9 +163,9 @@ def main(
 ):
     device = get_available_device()
     print("Loading dataset..")
-    dataset = MovieLens20MDataset(
-        "ml-25m", Params.rating_format, Params.max_rows, Params.max_users
-    )
+
+    dataset: BaseDataset = datasets_dict[Params.dataset_source]()
+
     train_size = len(dataset) - Params.eval_size
     train_dataset, eval_dataset = torch.utils.data.random_split(
         dataset, [train_size, Params.eval_size]

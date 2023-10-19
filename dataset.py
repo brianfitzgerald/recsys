@@ -8,14 +8,21 @@ from tabulate import tabulate
 import os
 import sys
 import torch
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
 class RatingFormat(IntEnum):
     BINARY = 1
     RATING = 2
 
+class BaseDataset(Dataset):
+    def __init__(self) -> None:
+        super().__init__()
 
-class MovieLens20MDataset(Dataset):
+        self.emb_columns: List[str] = []
+        self.pred_column: str = ""
+
+class MovieLens20MDataset(BaseDataset):
     # tags.csv:
     # userId,movieId,tag,timestamp
 
@@ -33,27 +40,29 @@ class MovieLens20MDataset(Dataset):
 
     def __init__(
         self,
-        dataset_path: str,
-        return_format: RatingFormat,
+        dataset_dir: str = "datasets/ml-25m",
         max_rows: int = sys.maxsize,
         max_users: int = None,
     ):
+        super().__init__()
+
         self.emb_columns: List[str] = ["userId", "movieId"]
         self.pred_column: str = "rating"
 
         ratings_data = pd.read_csv(
-            os.path.join(dataset_path, "ratings.csv"),
+            os.path.join(dataset_dir, "ratings.csv"),
             sep=",",
             header="infer",
             nrows=max_rows,
         ).dropna()
 
         genres_data = pd.read_csv(
-            os.path.join(dataset_path, "movies.csv"),
+            os.path.join(dataset_dir, "movies.csv"),
             sep=",",
             engine="pyarrow",
             header="infer",
         )
+
         primary_genre_per_movie = genres_data["genres"].str.split("|").str[0]
         self.movie_genres = pd.concat([genres_data["movieId"], primary_genre_per_movie])
 
@@ -62,7 +71,7 @@ class MovieLens20MDataset(Dataset):
         ]
 
         self.movie_data = pd.read_csv(
-            os.path.join(dataset_path, "movies.csv"),
+            os.path.join(dataset_dir, "movies.csv"),
             sep=",",
             engine="pyarrow",
             header="infer",
@@ -85,8 +94,6 @@ class MovieLens20MDataset(Dataset):
             f"Number of users: {no_users} | Number of movies: {no_movies} | Number of samples: {self.no_samples}"
         )
 
-        self.return_format = return_format
-
     def display_recommendation_output(
         self, user_id: int, pred_ids: np.ndarray, true_ids: np.ndarray
     ):
@@ -104,27 +111,35 @@ class MovieLens20MDataset(Dataset):
     def __getitem__(self, index):
         sample = self.ratings_data.iloc[index]
         rating = sample["rating"].astype(np.float32)
-        if self.return_format == RatingFormat.BINARY:
-            rating = (rating >= self.neg_threshold).astype(np.float32)
         features = sample[self.emb_columns].to_numpy()
-        # print('index', index, 'features', features, 'rating', rating)
         return features, rating
 
-class CriteoDataset(Dataset):
+class CriteoDataset(BaseDataset):
 
     def __init__(self) -> None:
         super().__init__()
 
-        all_data = pd.read_csv("datasets/criteo_1m.txt")
+        columns = ['label', *(f'I{i}' for i in range(1, 14)), *(f'C{i}' for i in range(1, 27))]
+        all_data = pd.read_csv("datasets/criteo_1m.txt", sep="\t", names=columns)
+
+        scaler = MinMaxScaler()
+        labeler = LabelEncoder()
+
+        all_data.iloc[::,1:14] = scaler.fit_transform(all_data.iloc[::,1:14])
+
+        for feature in all_data.iloc[::,14:].columns:
+            all_data[feature] = labeler.fit_transform(all_data[feature])
+        
+        self.category_features = torch.tensor(all_data.iloc[::,14:].values)
+        self.dense_features = torch.tensor(all_data.iloc[::,1:14].values)
 
         self.labels = torch.tensor(all_data["label"].values)
-        self.features = torch.tensor(all_data.iloc[:, 1:].values)
 
     def __len__(self):
         return len(self.labels)
     
     def __getitem__(self, index):
-        return self.features[index], self.labels[index]
+        return torch.cat((self.category_features, self.dense_features), 0), self.labels[index]
 
 class DatasetSource(IntEnum):
     MOVIELENS = 1
