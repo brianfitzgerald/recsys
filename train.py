@@ -1,31 +1,25 @@
 from collections import defaultdict
 from enum import IntEnum
-from math import log2
-from typing import List, Optional
+from typing import Optional
 import pandas as pd
+from torch.optim import AdamW
+from utils import get_available_device
 
 pd.options.display.float_format = "{:.2f}".format
 
 import fire
 import numpy as np
 import torch
-import torch.nn.functional as F
 import wandb
-from dataset import MovieLens20MDataset, RatingFormat
+from dataset import MovieLens20MDataset, RatingFormat, DatasetSource
 from metrics import *
 from models import *
 from sklearn.metrics import roc_auc_score
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
-from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 torch.manual_seed(0)
-
-
-class DatasetSource(IntEnum):
-    MOVIELENS = 1
-    AMAZON = 2
-    CRITEO = 3
 
 
 class Params:
@@ -162,6 +156,7 @@ class RecommenderModule(nn.Module):
 def main(
     use_wandb: bool = False,
 ):
+    device = get_available_device()
     print("Loading dataset..")
     dataset = MovieLens20MDataset(
         "ml-25m", Params.rating_format, Params.max_rows, Params.max_users
@@ -182,13 +177,13 @@ def main(
         dataset.feature_sizes,
         Params.embedding_dim,
         Params.rating_format,
-    )
+    ).to(device)
     model.train()
-    module = RecommenderModule(model, use_wandb)
+    module = RecommenderModule(model, use_wandb).to(device)
     if use_wandb:
         wandb.init(project="recsys", config=Params.default_values())
         wandb.watch(model)
-    optimizer = torch.optim.AdamW(
+    optimizer = AdamW(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
     scheduler = CosineAnnealingLR(optimizer, T_max=Params.num_epochs, eta_min=1e-6)

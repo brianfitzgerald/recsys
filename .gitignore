@@ -159,3 +159,7 @@ ratings.csv
 ml-25m
 *.zip
 recsys/*
+
+.DS_Store
+
+datasets/*

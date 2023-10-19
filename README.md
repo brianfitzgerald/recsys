@@ -11,15 +11,24 @@ paper - https://arxiv.org/abs/1708.05031
 
 ### Retrieving datasets
 
+Movielens:
 ```
-wget https://files.grouplens.org/datasets/movielens/ml-25m.zip
-unzip ml-25m.zip
+wget https://files.grouplens.org/datasets/movielens/ml-25m.zip datasets/ml-25m.zip
+unzip datasets/ml-25m.zip
 ```
 
+Amazon:
 ```
-wget https://jmcauley.ucsd.edu/data/amazon_v2/categoryFilesSmall/Toys_and_Games_5.json.gz --no-check-certificate
-gzip -d Toys_and_Games_5.json.gz
+wget https://jmcauley.ucsd.edu/data/amazon_v2/categoryFilesSmall/Toys_and_Games_5.json.gz datasets/amazon_toys.json.gz --no-check-certificate
+gzip -d datasets/amazon_toys.json.gz
 ```
+
+Criteo:
+```
+https://www.kaggle.com/datasets/leonerd/criteo-small -> Download
+mv ~/Downloads/train_1m.txt ./datasets/criteo_1m.txt
+```
+
 
 Multitask paper:
 https://daiwk.github.io/assets/youtube-multitask.pdf

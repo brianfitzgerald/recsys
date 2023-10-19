@@ -1,12 +1,13 @@
 import numpy as np
 import pandas as pd
-import torch.utils.data
+from torch.utils.data import Dataset
 from enum import IntEnum
 from numpy.random import choice, randint
 from typing import List
 from tabulate import tabulate
 import os
 import sys
+import torch
 
 
 class RatingFormat(IntEnum):
@@ -14,7 +15,7 @@ class RatingFormat(IntEnum):
     RATING = 2
 
 
-class MovieLens20MDataset(torch.utils.data.Dataset):
+class MovieLens20MDataset(Dataset):
     # tags.csv:
     # userId,movieId,tag,timestamp
 
@@ -108,3 +109,30 @@ class MovieLens20MDataset(torch.utils.data.Dataset):
         features = sample[self.emb_columns].to_numpy()
         # print('index', index, 'features', features, 'rating', rating)
         return features, rating
+
+class CriteoDataset(Dataset):
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        all_data = pd.read_csv("datasets/criteo_1m.txt")
+
+        self.labels = torch.tensor(all_data["label"].values)
+        self.features = torch.tensor(all_data.iloc[:, 1:].values)
+
+    def __len__(self):
+        return len(self.labels)
+    
+    def __getitem__(self, index):
+        return self.features[index], self.labels[index]
+
+class DatasetSource(IntEnum):
+    MOVIELENS = 1
+    AMAZON = 2
+    CRITEO = 3
+
+
+datasets_dict = {
+    DatasetSource.CRITEO: CriteoDataset,
+    DatasetSource.MOVIELENS: MovieLens20MDataset,
+}
