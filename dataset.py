@@ -145,6 +145,7 @@ class DatasetSource(IntEnum):
     MOVIELENS = 1
     AMAZON = 2
     CRITEO = 3
+    SPOTIFY = 4
 
 
 datasets_dict = {
