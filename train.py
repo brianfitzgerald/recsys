@@ -36,13 +36,13 @@ class Params:
     batch_size: int = 32
     eval_size: int = 100
     max_rows: Optional[int] = None
-    model_architecture: ModelArchitecture = ModelArchitecture.WIDE_DEEP
+    model_architecture: ModelArchitecture = ModelArchitecture.TWO_TOWER
     dataset_source: DatasetSource = DatasetSource.CRITEO
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
     num_epochs: int = 100
 
-    do_eval: bool = True
+    do_eval: bool = False
     eval_every: int = 1
     max_batches: int = 10
 
@@ -65,33 +65,33 @@ class RecommenderModule(nn.Module):
         super().__init__()
         self.recommender = recommender
         if (
-            Params.rating_format == RatingFormat.BINARY
-            and Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION
+            Params.model_architecture == ModelArchitecture.MATRIX_FACTORIZATION
         ):
-            self.loss_fn = torch.nn.BCELoss()
-        else:
             self.loss_fn = torch.nn.MSELoss()
+        else:
+            self.loss_fn = torch.nn.BCELoss()
         self.use_wandb = use_wandb
 
-    def training_step(self, batch):
-        _, ratings = batch
+    def training_step(self, batch: DatasetRow):
         preds = self.recommender(batch).squeeze()
-        loss = self.loss_fn(preds, ratings)
+        labels = batch.labels.to(dtype=torch.float32, device=preds.device)
+        loss = self.loss_fn(preds, labels)
         # print(f"Loss: {loss.item():03.3f} preds: {preds.tolist()} ratings: {ratings.tolist()}")
         if self.use_wandb:
             wandb.log({"train_loss": loss})
         return loss
 
-    def eval_step(self, dataset: MovieLens20MDataset, batch, k: int = 10):
+    def eval_step(self, dataset: BaseDataset, batch: DatasetRow, k: int = 10):
         with torch.no_grad():
-            features, ratings = batch
-            users, items = features[:, 0], features[:, 1]
+            users, items = dataset.categorical_features["userId"], dataset.categorical_features["movieId"]
             max_user_id = int(users.max().item() + 1)
             preds = self.recommender(batch).squeeze()
-            eval_loss = self.loss_fn(preds, ratings).item()
+            # TODO rewrite
+            eval_loss = self.loss_fn(preds, dataset.labels).item()
             user_item_ratings = np.empty((max_user_id, k))
             true_item_ratings = np.empty((max_user_id, k))
             for i, user_id in enumerate(users):
+
                 user_id = user_id.int().item()
                 # predict every item for every user
                 user_ids = torch.full_like(items, user_id)
@@ -162,26 +162,26 @@ def main(
     use_wandb: bool = False,
 ):
     device = get_available_device()
-    print("Loading dataset..")
 
     dataset: BaseDataset = datasets_dict[Params.dataset_source]()
+    print(f"Loading dataset {dataset.__class__.__name__}..")
 
     train_size = len(dataset) - Params.eval_size
     train_dataset, eval_dataset = torch.utils.data.random_split(
         dataset, [train_size, Params.eval_size]
     )
+    # Multithreaded dataloading seems to be slower when using MPS
     train_dataloader = DataLoader(
-        train_dataset, batch_size=Params.batch_size, shuffle=True, num_workers=8
+        train_dataset, batch_size=Params.batch_size, shuffle=True, num_workers=0
     )
     eval_dataloader = DataLoader(
-        eval_dataset, batch_size=Params.eval_size, shuffle=True, num_workers=8
+        eval_dataset, batch_size=Params.eval_size, shuffle=True, num_workers=0
     )
     model_cls: RecModel = models_dict[Params.model_architecture]
+    print(f"Loading model {model_cls.__name__}..")
     model: RecModel = model_cls(
-        dataset.emb_columns,
-        dataset.feature_sizes,
-        Params.embedding_dim,
-        Params.rating_format,
+        dataset,
+        device
     ).to(device)
     model.train()
     module = RecommenderModule(model, use_wandb).to(device)
@@ -192,6 +192,7 @@ def main(
         module.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
     scheduler = CosineAnnealingLR(optimizer, T_max=Params.num_epochs, eta_min=1e-6)
+    print("Starting training...")
     for i in range(Params.num_epochs):
         if i % Params.eval_every == 0 and Params.do_eval:
             print("Running eval..")

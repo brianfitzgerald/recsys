@@ -39,3 +39,9 @@ https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/
 Dataset options:
 - https://www.kaggle.com/competitions/avazu-ctr-prediction/data?select=train.gz
 - https://www.kaggle.com/datasets/mrkmakr/criteo-dataset
+
+### Overview
+
+Each model recieves a tensor of categorical and numerical features, and outputs a single value (the predicted user action).
+
+All categorical features are embedded by default. Each label is binary.

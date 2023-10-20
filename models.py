@@ -1,11 +1,12 @@
 from typing import List, Tuple
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from torch import nn
 from enum import IntEnum
 import pandas as pd
 
-from dataset import RatingFormat
+from dataset import BaseDataset, RatingFormat, DatasetRow
 
 
 class ModelArchitecture(IntEnum):
@@ -13,34 +14,36 @@ class ModelArchitecture(IntEnum):
     MATRIX_FACTORIZATION = 2
     DEEP_FM = 3
     WIDE_DEEP = 4
+    TWO_TOWER = 5
 
 
 class RecModel(nn.Module):
     def __init__(
         self,
-        emb_columns: List[str],
-        feature_sizes: List[int],
-        embedding_dim: int,
-        rating_format: RatingFormat,
+        dataset: BaseDataset,
+        device: torch.device,
     ):
         super().__init__()
+        self.device = device
 
-        self.rating_format = rating_format
-
+        embedding_dim: int = 6
         emb_dict = {}
-        self.emb_columns = emb_columns
-        for i, col_name in enumerate(emb_columns):
-            emb_dict[col_name] = nn.Embedding(feature_sizes[i], embedding_dim)
+
+        # List of feature names for each column, used for embeddings
+        self.categorical_feature_names: List[str] = dataset.categorical_features.columns.values
+
+        for col_name in dataset.categorical_features.columns:
+            emb_dict[col_name] = nn.Embedding(dataset.categorical_feature_sizes[col_name], embedding_dim)
         emb_dict = nn.ModuleDict(emb_dict)
         self.emb_dict = emb_dict
-        self.emb_in_size = embedding_dim * len(emb_columns)
+        self.emb_in_size = embedding_dim * len(dataset.categorical_feature_sizes)
+        print(f"Created embeddings for features: {dataset.categorical_features.columns.values}")
 
-    def get_feature_embeddings(self, batch, concat=True):
-        features, _ = batch
+    def get_feature_embeddings(self, batch: DatasetRow, concat=True):
         embeddings = []
-        for i, feature_name in enumerate(self.emb_columns):
+        for i, feature_name in enumerate(self.categorical_feature_names):
             emb = self.emb_dict[feature_name]
-            feature_column = features[:, i].to(torch.int64)
+            feature_column = batch.categorical_features[:, i].to(dtype=torch.int64, device=self.device)
             embedded_column = emb(feature_column)
             embeddings.append(embedded_column)
         embeddings = torch.stack(embeddings, dim=1).squeeze()
@@ -48,54 +51,58 @@ class RecModel(nn.Module):
             embeddings = embeddings.view(-1, self.emb_in_size)
         return embeddings
 
+    def create_linear_tower(self, layers: List[int]) -> nn.Sequential:
+        """
+        Creates a linear tower with ReLU activations and dropout, with the embedding size as input
+        and the output size as the last element of the layers list
+        """
+        all_layers = []
+        # insert the embedding size as the first element
+        layers.insert(0, self.emb_in_size)
+        for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
+            all_layers.append(nn.Linear(in_size, out_size))
+            all_layers.append(nn.ReLU())
+            all_layers.append(nn.Dropout(0.1))
+        return nn.Sequential(*all_layers)
 
 class WideDeepModel(RecModel):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.wide_layer = torch.nn.Linear(self.emb_in_size, 1)
-        layers = [64, 32, 16, 8]
+        self.wide_layer = nn.Linear(self.emb_in_size, 1)
+        layers = [64, 32, 16, 8, 1]
 
-        self.deep_layers = torch.nn.ModuleList()
-        for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.deep_layers.append(torch.nn.Linear(in_size, out_size))
-            self.deep_layers.append(torch.nn.ReLU())
-            self.deep_layers.append(torch.nn.Dropout(0.1))
-        self.deep_layers = torch.nn.Sequential(*self.deep_layers)
-        self.deep_output_layer = torch.nn.Linear(layers[-1], 1)
+        self.deep_layers = self.create_linear_tower(self.emb_in_size, layers)
 
-    def forward(self, batch):
+    def forward(self, batch: DatasetRow):
         emb_cat = self.get_feature_embeddings(batch)
         wide_out = self.wide_layer(emb_cat)
         deep_out = self.deep_layers(emb_cat)
-        deep_out = self.deep_output_layer(deep_out)
         x = wide_out + deep_out
-        if self.rating_format == RatingFormat.BINARY:
-            x = torch.sigmoid(x)
+        x = torch.sigmoid(x)
         return x
 
 
 class DeepFMModel(RecModel):
     def __init__(self) -> None:
         super().__init__()
-        self.fc_layers = torch.nn.ModuleList()
+        self.fc_layers = nn.ModuleList()
         layers = [64, 32, 16, 8]
 
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
-            self.fc_layers.append(torch.nn.ReLU())
-            self.fc_layers.append(torch.nn.Dropout(0.1))
+            self.fc_layers.append(nn.Linear(in_size, out_size))
+            self.fc_layers.append(nn.ReLU())
+            self.fc_layers.append(nn.Dropout(0.1))
 
-        self.fc_layers = torch.nn.Sequential(*self.fc_layers)
-        self.output_layer = torch.nn.Linear(layers[-1], 1)
+        self.fc_layers = nn.Sequential(*self.fc_layers)
+        self.output_layer = nn.Linear(layers[-1], 1)
 
     def forward(self, batch):
         emb_cat = self.get_feature_embeddings(batch)
         x = self.fc_layers(x)
         x = x + get_fm_loss(emb_cat)
         x = self.output_layer(x)
-        if self.rating_format == RatingFormat.BINARY:
-            x = torch.sigmoid(x)
+        x = torch.sigmoid(x)
         return x
 
 
@@ -124,22 +131,19 @@ class NeuralCFModel(RecModel):
         emb_columns: List[str],
         feature_sizes: List[str],
         embedding_dim: int,
-        rating_format: RatingFormat,
         layers: List[int] = [64, 32, 16, 8],
     ):
-        super().__init__(emb_columns, feature_sizes, embedding_dim, rating_format)
+        super().__init__(emb_columns, feature_sizes, embedding_dim)
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
-
-        self.rating_format = rating_format
 
         self.bn = nn.BatchNorm1d(layers[0])
 
-        self.fc_layers = torch.nn.ModuleList()
+        self.fc_layers = nn.ModuleList()
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
+            self.fc_layers.append(nn.Linear(in_size, out_size))
 
         # 1 is the output dimension
-        self.output_layer = torch.nn.Linear(layers[-1], 1)
+        self.output_layer = nn.Linear(layers[-1], 1)
 
     def forward(self, batch):
         x = self.get_feature_embeddings(batch)
@@ -149,9 +153,26 @@ class NeuralCFModel(RecModel):
             x = F.relu(x)
             x = F.dropout(x, p=0.1, training=self.training)
         rating = self.output_layer(x)
-        if self.rating_format == RatingFormat.BINARY:
-            rating = torch.sigmoid(rating)
+        rating = torch.sigmoid(rating)
         return rating
+
+class TwoTowerModel(RecModel):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        layers = [64, 32, 16, 8, 1]
+
+        self.user_tower = self.create_linear_tower(layers)
+        self.item_tower = self.create_linear_tower(layers)
+
+    def forward(self, batch):
+        emb_cat = self.get_feature_embeddings(batch)
+        user_out = self.user_tower(emb_cat)
+        item_out = self.item_tower(emb_cat)
+        x = user_out + item_out
+        x = torch.sigmoid(x)
+        return x
+
 
 
 models_dict = {
@@ -159,4 +180,5 @@ models_dict = {
     ModelArchitecture.NEURAL_CF: NeuralCFModel,
     ModelArchitecture.DEEP_FM: DeepFMModel,
     ModelArchitecture.WIDE_DEEP: WideDeepModel,
+    ModelArchitecture.TWO_TOWER: TwoTowerModel,
 }

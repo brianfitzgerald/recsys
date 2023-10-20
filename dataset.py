@@ -2,13 +2,13 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
 from enum import IntEnum
-from numpy.random import choice, randint
-from typing import List
 from tabulate import tabulate
 import os
 import sys
 import torch
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from torch import Tensor
+from typing import NamedTuple, List
 
 
 class RatingFormat(IntEnum):
@@ -16,11 +16,32 @@ class RatingFormat(IntEnum):
     RATING = 2
 
 class BaseDataset(Dataset):
-    def __init__(self) -> None:
+    def __init__(self, categorical_features: pd.DataFrame, dense_features: pd.DataFrame, labels: Tensor) -> None:
         super().__init__()
 
-        self.emb_columns: List[str] = []
-        self.pred_column: str = ""
+        # categorical features are converted to embeddings
+        # (num_features,)
+        self.categorical_features: pd.DataFrame = categorical_features
+        # (num_features,)
+        self.categorical_feature_sizes: pd.DataFrame = categorical_features.max() + 1
+        self.dense_features: pd.DataFrame = dense_features
+        self.labels: pd.DataFrame = labels
+
+        assert self.categorical_features.shape[0] == self.dense_features.shape[0]
+
+    def __len__(self):
+        return self.categorical_features.shape[0]
+
+    def display_recommendation_output(
+        self, user_id: int, pred_ids: np.ndarray, true_ids: np.ndarray
+    ):
+        """Displays a table of recommendations for a certain user"""
+        raise NotImplementedError("Please implement a recommendation output fn for this dataset!")
+
+class DatasetRow(NamedTuple):
+    dense_features: Tensor
+    categorical_features: Tensor
+    labels: Tensor
 
 class MovieLens20MDataset(BaseDataset):
     # tags.csv:
@@ -44,31 +65,14 @@ class MovieLens20MDataset(BaseDataset):
         max_rows: int = sys.maxsize,
         max_users: int = None,
     ):
-        super().__init__()
-
-        self.emb_columns: List[str] = ["userId", "movieId"]
-        self.pred_column: str = "rating"
 
         ratings_data = pd.read_csv(
             os.path.join(dataset_dir, "ratings.csv"),
             sep=",",
             header="infer",
             nrows=max_rows,
-        ).dropna()
-
-        genres_data = pd.read_csv(
-            os.path.join(dataset_dir, "movies.csv"),
-            sep=",",
             engine="pyarrow",
-            header="infer",
-        )
-
-        primary_genre_per_movie = genres_data["genres"].str.split("|").str[0]
-        self.movie_genres = pd.concat([genres_data["movieId"], primary_genre_per_movie])
-
-        self.feature_sizes: List[int] = [
-            ratings_data[x].max() + 1 for x in self.emb_columns
-        ]
+        ).dropna()
 
         self.movie_data = pd.read_csv(
             os.path.join(dataset_dir, "movies.csv"),
@@ -77,7 +81,9 @@ class MovieLens20MDataset(BaseDataset):
             header="infer",
         )
 
-        self.ratings_data = ratings_data
+        primary_genre_per_movie = self.movie_data["genres"].str.split("|").str[0]
+        self.movie_genres = pd.concat([self.movie_data["movieId"], primary_genre_per_movie])
+
         self.neg_threshold = 2.5
 
         if max_users is not None:
@@ -87,40 +93,44 @@ class MovieLens20MDataset(BaseDataset):
             ]
             ratings_data = ratings_from_first_n_users
 
-        no_users = self.ratings_data["userId"].max()
-        no_movies = self.ratings_data["movieId"].max()
-        self.no_samples = self.ratings_data.shape[0]
+        categorical_features = ["userId", "movieId"]
+
+        super().__init__(ratings_data[categorical_features], None)
+        no_users = ratings_data["userId"].max()
+        no_movies = ratings_data["movieId"].max()
+        no_samples = ratings_data.shape[0]
+
         print(
-            f"Number of users: {no_users} | Number of movies: {no_movies} | Number of samples: {self.no_samples}"
+            f"Number of users: {no_users} | Number of movies: {no_movies} | Number of samples: {no_samples}"
+        )
+
+    def __getitem__(self, index):
+        sample = self.ratings_data.iloc[index]
+        rating = sample["rating"].astype(np.float32)
+        features = torch.tensor(sample[self.emb_columns])
+        return DatasetRow(
+            labels=rating,
+            categorical_features=features,
         )
 
     def display_recommendation_output(
         self, user_id: int, pred_ids: np.ndarray, true_ids: np.ndarray
     ):
-        """Returns a dictionary of movie names and genres for a batch of movie IDs"""
-        pred_data = self.movie_data.iloc[pred_ids]
-        true_data = self.movie_data.iloc[true_ids]
+        """Displays a table of recommendations for a certain user"""
+        pred_data = self.categorical_features.iloc[pred_ids]
+        true_data = self.categorical_features.iloc[true_ids]
         print(f"predictions for user {user_id}:")
         print(tabulate(pred_data[["title", "genres"]], headers="keys", tablefmt="psql"))
         print(f"ground truth for user {user_id}:")
         print(tabulate(true_data[["title", "genres"]], headers="keys", tablefmt="psql"))
 
-    def __len__(self):
-        return self.no_samples
-
-    def __getitem__(self, index):
-        sample = self.ratings_data.iloc[index]
-        rating = sample["rating"].astype(np.float32)
-        features = sample[self.emb_columns].to_numpy()
-        return features, rating
 
 class CriteoDataset(BaseDataset):
 
     def __init__(self) -> None:
-        super().__init__()
 
         columns = ['label', *(f'I{i}' for i in range(1, 14)), *(f'C{i}' for i in range(1, 27))]
-        all_data = pd.read_csv("datasets/criteo_1m.txt", sep="\t", names=columns)
+        all_data = pd.read_csv("datasets/criteo_1m.txt", sep="\t", names=columns, engine="pyarrow")
 
         scaler = MinMaxScaler()
         labeler = LabelEncoder()
@@ -129,17 +139,25 @@ class CriteoDataset(BaseDataset):
 
         for feature in all_data.iloc[::,14:].columns:
             all_data[feature] = labeler.fit_transform(all_data[feature])
+
+        all_data.fillna(0, inplace=True)
         
-        self.category_features = torch.tensor(all_data.iloc[::,14:].values)
-        self.dense_features = torch.tensor(all_data.iloc[::,1:14].values)
+        self.categorical_features = all_data.iloc[::,14:]
+        self.dense_features = all_data.iloc[::,1:14]
 
         self.labels = torch.tensor(all_data["label"].values)
+        super().__init__(self.categorical_features, self.dense_features, self.labels)
+        assert self.categorical_features.shape[0] == self.dense_features.shape[0] == self.labels.shape[0]
 
     def __len__(self):
-        return len(self.labels)
+        return self.labels.shape[0]
     
-    def __getitem__(self, index):
-        return torch.cat((self.category_features, self.dense_features), 0), self.labels[index]
+    def __getitem__(self, index) -> DatasetRow:
+        return DatasetRow(
+            dense_features=torch.tensor(self.dense_features.loc[index].values),
+            categorical_features=torch.tensor(self.categorical_features.loc[index].values),
+            labels=self.labels[index]
+        )
 
 class DatasetSource(IntEnum):
     MOVIELENS = 1
