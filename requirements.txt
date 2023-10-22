@@ -9,3 +9,4 @@ pandas
 scikit-learn
 tabulate
 torch==2.0.1
+tensorboard

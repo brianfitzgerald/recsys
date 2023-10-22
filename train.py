@@ -1,7 +1,7 @@
 from collections import defaultdict
 from enum import IntEnum
 import glob
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 
 import pandas as pd
 from torch.optim import AdamW
@@ -18,29 +18,36 @@ import torch
 import wandb
 from sklearn.metrics import roc_auc_score
 from torch import Tensor, nn
-from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler
+from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler, LinearLR, ConstantLR
 from torch.utils.data import DataLoader
+import sys
 
-from dataset import BaseDataset, DatasetSource, RatingFormat, datasets_dict
+from dataset import BaseDataset, CriteoDataset, DatasetSource, MovieLens20MDataset, RatingFormat, datasets_dict
 from metrics import *
 from models import *
 
 torch.manual_seed(0)
 
+class SchedulerOption(IntEnum):
+    CONSTANT = 1
+    LINEAR = 2
+    COSINE = 3
+
 class Params:
     learning_rate: float = 5e-3
     weight_decay: float = 1e-5
 
-    embedding_dim: int = 32
-    dropout: float = 0.2
-    batch_size: int = 32
+    embedding_dim: int = 64
+    dropout: float = 0
+    batch_size: int = 128
     eval_size: int = 100
     max_rows: Optional[int] = None
     model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
     dataset_source: DatasetSource = DatasetSource.MOVIELENS
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
-    num_epochs: int = 100
+    num_epochs: int = 500
+    scheduler: SchedulerOption = SchedulerOption.COSINE
 
     do_eval: bool = False
     eval_every: int = 1
@@ -61,7 +68,7 @@ class Params:
 
 
 class RecommenderModule(nn.Module):
-    def __init__(self, recommender: RecModel, use_wandb: bool, writer: SummaryWriter):
+    def __init__(self, recommender: RecModel, use_wandb: bool):
         super().__init__()
         self.recommender = recommender
         if (
@@ -71,7 +78,6 @@ class RecommenderModule(nn.Module):
         else:
             self.loss_fn = torch.nn.BCELoss()
         self.use_wandb = use_wandb
-        self.writer = writer
 
     def training_step(self, batch: DatasetRow) -> Tensor:
         preds = self.recommender(batch).squeeze()
@@ -154,7 +160,12 @@ def main(
 ):
     device = get_available_device()
 
-    dataset: BaseDataset = datasets_dict[Params.dataset_source]()
+    dataset_type = datasets_dict[Params.dataset_source]
+    if isinstance(dataset_type, MovieLens20MDataset):
+        dataset = dataset_type(max_users=Params.max_users)
+    else:
+        dataset = dataset_type()
+
     print(f"Loading dataset {dataset.__class__.__name__}..")
 
     writer = SummaryWriter()
@@ -165,10 +176,10 @@ def main(
     )
     # Multithreaded dataloading seems to be slower when using MPS
     train_dataloader = DataLoader(
-        train_dataset, batch_size=Params.batch_size, shuffle=True, num_workers=0
+        train_dataset, batch_size=Params.batch_size, num_workers=0
     )
     eval_dataloader = DataLoader(
-        eval_dataset, batch_size=Params.eval_size, shuffle=True, num_workers=0
+        eval_dataset, batch_size=Params.eval_size, num_workers=0
     )
     model_cls = models_dict[Params.model_architecture]
     print(f"Loading model {model_cls.__name__}..")
@@ -181,8 +192,14 @@ def main(
     optimizer = AdamW(
         model.parameters(), lr=Params.learning_rate, weight_decay=Params.weight_decay
     )
-    scheduler = CosineAnnealingLR(optimizer, T_max=Params.num_epochs, eta_min=1e-6)
-    module = RecommenderModule(model, use_wandb, writer).to(device)
+
+    scheduler = ConstantLR(optimizer)
+    if Params.scheduler == SchedulerOption.LINEAR:
+        scheduler = LinearLR(optimizer)
+    elif Params.scheduler == SchedulerOption.COSINE:
+        scheduler = CosineAnnealingLR(optimizer, T_max=Params.num_epochs, eta_min=1e-6)
+
+    module = RecommenderModule(model, use_wandb).to(device)
 
     if use_wandb:
         wandb.init(project="recsys", config=Params.default_values())
@@ -217,7 +234,7 @@ def main(
                 writer.add_scalar("lr", learning_rate, global_step)
                 writer.add_scalar("train_loss", loss, global_step)
 
-            print(f"Epoch {global_step:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}, lr {learning_rate:03.5f}")
+            print(f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}, lr {learning_rate:03.5f}")
 
             if j > Params.max_batches:
                 break

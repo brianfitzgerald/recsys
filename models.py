@@ -142,10 +142,10 @@ class NeuralCFModel(RecModel):
     def forward(self, batch):
         x = self.get_feature_embeddings(batch)
         x = self.bn(x)
+        x = F.dropout(x, p=0.1, training=self.training)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
-            x = F.dropout(x, p=0.1, training=self.training)
         x = torch.sigmoid(x)
         return x
 

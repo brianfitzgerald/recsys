@@ -1,3 +1,4 @@
+from unittest.mock import Base
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
@@ -8,7 +9,7 @@ import sys
 import torch
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from torch import Tensor
-from typing import NamedTuple, List, Optional
+from typing import NamedTuple, List, Optional, Dict, Union
 
 
 class RatingFormat(IntEnum):
@@ -22,7 +23,7 @@ class DatasetRow(NamedTuple):
 
 
 class BaseDataset(Dataset):
-    def __init__(self, categorical_features: pd.DataFrame, dense_features: pd.DataFrame, labels: Tensor) -> None:
+    def __init__(self, categorical_features: pd.DataFrame, dense_features: pd.DataFrame, labels: pd.Series) -> None:
         super().__init__()
 
         # categorical features are converted to embeddings
@@ -32,7 +33,7 @@ class BaseDataset(Dataset):
         self.categorical_feature_sizes: pd.Series = categorical_features.max() + 1
         self.categorical_feature_names=self.categorical_features.columns.tolist()
         self.dense_features: pd.DataFrame = dense_features
-        self.labels: Tensor = labels
+        self.labels: Tensor = torch.tensor(labels.values)
 
         assert self.categorical_features.shape[0] == self.dense_features.shape[0]
 
@@ -105,9 +106,8 @@ class MovieLens20MDataset(BaseDataset):
 
         categorical_features = ["userId", "movieId"]
         dense_features = ["timestamp"]
-        ratings = torch.tensor(ratings_data["rating"].values)
 
-        super().__init__(ratings_data[categorical_features], ratings_data[dense_features], ratings)
+        super().__init__(ratings_data[categorical_features], ratings_data[dense_features], ratings_data["rating"])
         no_users = ratings_data["userId"].max()
         no_movies = ratings_data["movieId"].max()
         no_samples = ratings_data.shape[0]
@@ -148,8 +148,7 @@ class CriteoDataset(BaseDataset):
         self.categorical_features = all_data.iloc[::,14:]
         self.dense_features = all_data.iloc[::,1:14]
 
-        self.labels = torch.tensor(all_data["label"].values)
-        super().__init__(self.categorical_features, self.dense_features, self.labels)
+        super().__init__(self.categorical_features, self.dense_features, all_data["label"])
         assert self.categorical_features.shape[0] == self.dense_features.shape[0] == self.labels.shape[0]
 
     def __len__(self):
@@ -163,7 +162,7 @@ class DatasetSource(IntEnum):
     SPOTIFY = 4
 
 
-datasets_dict = {
+datasets_dict: Dict[DatasetSource, type[Union[MovieLens20MDataset, CriteoDataset]]] = {
     DatasetSource.CRITEO: CriteoDataset,
     DatasetSource.MOVIELENS: MovieLens20MDataset,
 }
