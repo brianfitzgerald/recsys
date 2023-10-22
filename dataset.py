@@ -30,6 +30,7 @@ class BaseDataset(Dataset):
         self.categorical_features: pd.DataFrame = categorical_features
         # (num_features,)
         self.categorical_feature_sizes: pd.Series = categorical_features.max() + 1
+        self.categorical_feature_names=self.categorical_features.columns.tolist()
         self.dense_features: pd.DataFrame = dense_features
         self.labels: Tensor = labels
 
@@ -70,7 +71,6 @@ class MovieLens20MDataset(BaseDataset):
     def __init__(
         self,
         dataset_dir: str = "datasets/ml-25m",
-        max_rows: int = sys.maxsize,
         max_users: Optional[int] = None,
     ):
 
@@ -78,9 +78,13 @@ class MovieLens20MDataset(BaseDataset):
             os.path.join(dataset_dir, "ratings.csv"),
             sep=",",
             header="infer",
-            nrows=max_rows,
             engine="pyarrow",
         ).dropna()
+
+        self.neg_threshold = 2.5
+        ratings_data["rating"] = ratings_data["rating"].apply(
+            lambda x: 1 if x >= self.neg_threshold else 0
+        )
 
         movie_data = pd.read_csv(
             os.path.join(dataset_dir, "movies.csv"),
@@ -91,8 +95,6 @@ class MovieLens20MDataset(BaseDataset):
 
         primary_genre_per_movie = movie_data["genres"].str.split("|").str[0]
         self.movie_genres = pd.concat([movie_data["movieId"], primary_genre_per_movie])
-
-        self.neg_threshold = 2.5
 
         if max_users is not None:
             first_n_users = ratings_data["userId"].unique()[:max_users]
