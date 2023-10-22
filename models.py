@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch import nn
 from enum import IntEnum
 import pandas as pd
+from typing import Dict
 
 from dataset import BaseDataset, RatingFormat, DatasetRow
 
@@ -30,7 +31,7 @@ class RecModel(nn.Module):
         emb_dict = {}
 
         # List of feature names for each column, used for embeddings
-        self.categorical_feature_names: List[str] = dataset.categorical_features.columns.values
+        self.categorical_feature_names: List[str] = dataset.categorical_features.columns.tolist()
 
         for col_name in dataset.categorical_features.columns:
             emb_dict[col_name] = nn.Embedding(dataset.categorical_feature_sizes[col_name], embedding_dim)
@@ -72,7 +73,7 @@ class WideDeepModel(RecModel):
         self.wide_layer = nn.Linear(self.emb_in_size, 1)
         layers = [64, 32, 16, 8, 1]
 
-        self.deep_layers = self.create_linear_tower(self.emb_in_size, layers)
+        self.deep_layers = self.create_linear_tower(layers)
 
     def forward(self, batch: DatasetRow):
         emb_cat = self.get_feature_embeddings(batch)
@@ -85,7 +86,6 @@ class WideDeepModel(RecModel):
 
 class DeepFMModel(RecModel):
     def __init__(self) -> None:
-        super().__init__()
         self.fc_layers = nn.ModuleList()
         layers = [64, 32, 16, 8]
 
@@ -99,7 +99,7 @@ class DeepFMModel(RecModel):
 
     def forward(self, batch):
         emb_cat = self.get_feature_embeddings(batch)
-        x = self.fc_layers(x)
+        x = self.fc_layers(emb_cat)
         x = x + get_fm_loss(emb_cat)
         x = self.output_layer(x)
         x = torch.sigmoid(x)
@@ -128,22 +128,16 @@ class MatrixFactorizationModel(RecModel):
 class NeuralCFModel(RecModel):
     def __init__(
         self,
-        emb_columns: List[str],
-        feature_sizes: List[str],
-        embedding_dim: int,
-        layers: List[int] = [64, 32, 16, 8],
+        dataset: BaseDataset,
+        device: torch.device,
     ):
-        super().__init__(emb_columns, feature_sizes, embedding_dim)
+        super().__init__(dataset, device)
+        layers: List[int] = [64, 32, 16, 8, 1]
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
-        self.bn = nn.BatchNorm1d(layers[0])
+        self.bn = nn.BatchNorm1d(self.emb_in_size)
 
-        self.fc_layers = nn.ModuleList()
-        for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.fc_layers.append(nn.Linear(in_size, out_size))
-
-        # 1 is the output dimension
-        self.output_layer = nn.Linear(layers[-1], 1)
+        self.fc_layers = self.create_linear_tower(layers)
 
     def forward(self, batch):
         x = self.get_feature_embeddings(batch)
@@ -152,9 +146,8 @@ class NeuralCFModel(RecModel):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
             x = F.dropout(x, p=0.1, training=self.training)
-        rating = self.output_layer(x)
-        rating = torch.sigmoid(rating)
-        return rating
+        x = torch.sigmoid(x)
+        return x
 
 class TwoTowerModel(RecModel):
     def __init__(self, *args, **kwargs) -> None:
@@ -175,7 +168,7 @@ class TwoTowerModel(RecModel):
 
 
 
-models_dict = {
+models_dict: Dict[ModelArchitecture, type[RecModel]] = {
     ModelArchitecture.MATRIX_FACTORIZATION: MatrixFactorizationModel,
     ModelArchitecture.NEURAL_CF: NeuralCFModel,
     ModelArchitecture.DEEP_FM: DeepFMModel,

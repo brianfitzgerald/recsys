@@ -23,22 +23,6 @@ def ndcg_score(y_true, y_score):
     return ndcg
 
 
-def novelty_score(predicted: List[int], pop: List[int], num_users: int, num_items: int):
-    mean_self_information = []
-    k = 0
-    for sublist in predicted:
-        self_information = 0
-        k += 1
-        for i in sublist:
-            if pop[i] > 0:
-                self_information += np.sum(-np.log2(pop[i] / num_users))
-            else:
-                continue
-        mean_self_information.append(self_information / num_items)
-    novelty = sum(mean_self_information) / k
-    return novelty
-
-
 def prediction_coverage_score(predicted: List[list], catalog: list):
     predicted_flattened = [p for sublist in predicted for p in sublist]
     unique_items_pred = set(predicted_flattened)
