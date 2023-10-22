@@ -37,7 +37,7 @@ class SchedulerOption(IntEnum):
     COSINE = 3
 
 class Params:
-    learning_rate: float = 5e-3
+    learning_rate: float = 5e-4
     weight_decay: float = 1e-5
 
     embedding_dim: int = 8
@@ -49,12 +49,12 @@ class Params:
     dataset_source: DatasetSource = DatasetSource.CRITEO
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
-    num_epochs: int = 500
+    num_epochs: int = 200
     scheduler: SchedulerOption = SchedulerOption.COSINE
 
     do_eval: bool = False
     eval_every: int = 1
-    max_batches: int = 10
+    max_batches: Optional[int] = 20
 
     @classmethod
     def default_values(cls):
@@ -79,12 +79,14 @@ class RecommenderModule(nn.Module):
         ):
             self.loss_fn = torch.nn.MSELoss()
         else:
-            self.loss_fn = torch.nn.BCELoss()
+            self.loss_fn = torch.nn.BCEWithLogitsLoss()
         self.use_wandb = use_wandb
 
     def training_step(self, batch: DatasetRow) -> Tensor:
         preds = self.recommender(batch).squeeze()
         labels = batch.labels.to(dtype=torch.float32, device=preds.device)
+        # print(torch.round(preds.detach().cpu(), decimals=3).tolist())
+        # print(labels.tolist())
         loss = self.loss_fn(preds, labels)
 
         return loss
@@ -240,7 +242,7 @@ def main(
 
             print(f"Epoch {i:03.0f}, batch {j:03.0f}, loss {loss.item():03.3f}, total norm: {total_norm.item():03.3f}, lr {learning_rate:03.5f}")
 
-            if j > Params.max_batches:
+            if Params.max_batches and j > Params.max_batches:
                 break
 
             # if Params.model_architecture != ModelArchitecture.MATRIX_FACTORIZATION:

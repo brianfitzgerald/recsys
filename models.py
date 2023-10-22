@@ -2,6 +2,7 @@ from typing import List, Tuple
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from torch.nn.init import xavier_normal_
 from torch import nn
 from enum import IntEnum
 import pandas as pd
@@ -42,7 +43,6 @@ class RecModel(nn.Module):
 
     def get_feature_embeddings(self, batch: DatasetRow, concat=True):
         embeddings = []
-        breakpoint()
         for i, feature_name in enumerate(self.categorical_feature_names):
             emb = self.emb_dict[feature_name]
             feature_column = batch.categorical_features[:, i].to(dtype=torch.int64, device=self.device)
@@ -64,7 +64,7 @@ class RecModel(nn.Module):
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
             all_layers.append(nn.Linear(in_size, out_size))
             all_layers.append(nn.ReLU())
-            all_layers.append(nn.Dropout(0.1))
+            # all_layers.append(nn.Dropout(0.1))
         return nn.Sequential(*all_layers)
 
 class WideDeepModel(RecModel):
@@ -133,7 +133,7 @@ class NeuralCFModel(RecModel):
         device: torch.device,
     ):
         super().__init__(dataset, device)
-        layers: List[int] = [128, 64, 32, 16, 8, 1]
+        layers: List[int] = [ 128, 64, 32, 16, 8, 4, 1]
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
         self.bn = nn.BatchNorm1d(self.emb_in_size)
@@ -142,12 +142,9 @@ class NeuralCFModel(RecModel):
 
     def forward(self, batch):
         x = self.get_feature_embeddings(batch)
-        # x = self.bn(x)
+        x = self.bn(x)
         # x = F.dropout(x, p=0.1, training=self.training)
-        for idx, _ in enumerate(range(len(self.fc_layers))):
-            x = self.fc_layers[idx](x)
-            x = F.relu(x)
-        x = torch.sigmoid(x)
+        x = self.fc_layers(x)
         return x
 
 class TwoTowerModel(RecModel):

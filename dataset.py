@@ -1,16 +1,12 @@
-from bdb import Breakpoint
-from unittest.mock import Base
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
 from enum import IntEnum
-from tabulate import tabulate
 import os
-import sys
 import torch
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder
 from torch import Tensor
-from typing import NamedTuple, List, Optional, Dict, Union
+from typing import NamedTuple, Optional, Dict, Union
 
 
 class RatingFormat(IntEnum):
@@ -134,13 +130,21 @@ class CriteoDataset(BaseDataset):
 
     def __init__(self) -> None:
 
-        columns = ['label', *(f'I{i}' for i in range(1, 14)), *(f'C{i}' for i in range(1, 27))]
-        all_data = pd.read_csv("datasets/criteo_1m.txt", sep="\t", names=columns, engine="pyarrow")
+        continuous_variable = [f"I{i}" for i in range(1, 14)]
+        discrete_variable = [f"C{i}" for i in range(1, 27)]
+        columns = ["label"] + continuous_variable + discrete_variable
+        all_data = pd.read_csv("datasets/criteo_1m.txt", sep='\t', names=columns)
+
+        # print(f"Missing values per column: {all_data.isnull().sum()}")
+        print(f"Label counts: {all_data['label'].value_counts()}")
+
+        # breakpoint()
         all_data.fillna(0, inplace=True)
+
 
         labeler = LabelEncoder()
 
-        categorical_features = all_data.iloc[::,14:]
+        categorical_features = all_data.loc[:, ["C1", "C2", "C5", "C7"]]
         dense_features = all_data.iloc[::,1:14]
         labels = all_data["label"]
 
