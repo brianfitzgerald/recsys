@@ -7,6 +7,7 @@ import pandas as pd
 from torch.optim import AdamW
 from torch.utils.data import random_split
 from torch.utils.tensorboard.writer import SummaryWriter
+from torch.autograd.anomaly_mode import set_detect_anomaly
 
 from utils import get_available_device
 
@@ -28,6 +29,8 @@ from models import *
 
 torch.manual_seed(0)
 
+set_detect_anomaly(True)
+
 class SchedulerOption(IntEnum):
     CONSTANT = 1
     LINEAR = 2
@@ -37,13 +40,13 @@ class Params:
     learning_rate: float = 5e-3
     weight_decay: float = 1e-5
 
-    embedding_dim: int = 64
+    embedding_dim: int = 8
     dropout: float = 0
     batch_size: int = 128
     eval_size: int = 100
     max_rows: Optional[int] = None
     model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
-    dataset_source: DatasetSource = DatasetSource.MOVIELENS
+    dataset_source: DatasetSource = DatasetSource.CRITEO
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
     num_epochs: int = 500
@@ -168,7 +171,8 @@ def main(
 
     print(f"Loading dataset {dataset.__class__.__name__}..")
 
-    writer = SummaryWriter()
+    comment = f"{Params.dataset_source.name}-{Params.model_architecture.name}"
+    writer = SummaryWriter(comment=comment)
     train_size = len(dataset) - Params.eval_size
 
     train_dataset, eval_dataset = random_split(

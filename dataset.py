@@ -1,3 +1,4 @@
+from bdb import Breakpoint
 from unittest.mock import Base
 import numpy as np
 import pandas as pd
@@ -107,7 +108,6 @@ class MovieLens20MDataset(BaseDataset):
         categorical_features = ["userId", "movieId"]
         dense_features = ["timestamp"]
 
-        super().__init__(ratings_data[categorical_features], ratings_data[dense_features], ratings_data["rating"])
         no_users = ratings_data["userId"].max()
         no_movies = ratings_data["movieId"].max()
         no_samples = ratings_data.shape[0]
@@ -115,6 +115,8 @@ class MovieLens20MDataset(BaseDataset):
         print(
             f"Number of users: {no_users} | Number of movies: {no_movies} | Number of samples: {no_samples}"
         )
+
+        super().__init__(ratings_data[categorical_features], ratings_data[dense_features], ratings_data["rating"])
 
     def display_recommendation_output(
         self, user_id: int, pred_ids: np.ndarray, true_ids: np.ndarray
@@ -134,26 +136,19 @@ class CriteoDataset(BaseDataset):
 
         columns = ['label', *(f'I{i}' for i in range(1, 14)), *(f'C{i}' for i in range(1, 27))]
         all_data = pd.read_csv("datasets/criteo_1m.txt", sep="\t", names=columns, engine="pyarrow")
+        all_data.fillna(0, inplace=True)
 
-        scaler = MinMaxScaler()
         labeler = LabelEncoder()
 
-        all_data.iloc[::,1:14] = scaler.fit_transform(all_data.iloc[::,1:14])
+        categorical_features = all_data.iloc[::,14:]
+        dense_features = all_data.iloc[::,1:14]
+        labels = all_data["label"]
 
-        for feature in all_data.iloc[::,14:].columns:
-            all_data[feature] = labeler.fit_transform(all_data[feature])
-
-        all_data.fillna(0, inplace=True)
+        for feature in categorical_features.columns:
+            categorical_features[feature] = labeler.fit_transform(categorical_features[feature])
         
-        self.categorical_features = all_data.iloc[::,14:]
-        self.dense_features = all_data.iloc[::,1:14]
-
-        super().__init__(self.categorical_features, self.dense_features, all_data["label"])
-        assert self.categorical_features.shape[0] == self.dense_features.shape[0] == self.labels.shape[0]
-
-    def __len__(self):
-        return self.labels.shape[0]
-    
+        assert categorical_features.shape[0] == dense_features.shape[0] == labels.shape[0]
+        super().__init__(categorical_features, dense_features, labels)
 
 class DatasetSource(IntEnum):
     MOVIELENS = 1

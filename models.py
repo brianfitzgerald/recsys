@@ -42,6 +42,7 @@ class RecModel(nn.Module):
 
     def get_feature_embeddings(self, batch: DatasetRow, concat=True):
         embeddings = []
+        breakpoint()
         for i, feature_name in enumerate(self.categorical_feature_names):
             emb = self.emb_dict[feature_name]
             feature_column = batch.categorical_features[:, i].to(dtype=torch.int64, device=self.device)
@@ -132,7 +133,7 @@ class NeuralCFModel(RecModel):
         device: torch.device,
     ):
         super().__init__(dataset, device)
-        layers: List[int] = [64, 32, 16, 8, 1]
+        layers: List[int] = [128, 64, 32, 16, 8, 1]
         assert layers[0] % 2 == 0, "layers[0] must be an even number"
 
         self.bn = nn.BatchNorm1d(self.emb_in_size)
@@ -141,8 +142,8 @@ class NeuralCFModel(RecModel):
 
     def forward(self, batch):
         x = self.get_feature_embeddings(batch)
-        x = self.bn(x)
-        x = F.dropout(x, p=0.1, training=self.training)
+        # x = self.bn(x)
+        # x = F.dropout(x, p=0.1, training=self.training)
         for idx, _ in enumerate(range(len(self.fc_layers))):
             x = self.fc_layers[idx](x)
             x = F.relu(x)
