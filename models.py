@@ -1,5 +1,6 @@
 from typing import List, Tuple
 import torch
+from torch import Tensor
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn.init import xavier_normal_
@@ -41,7 +42,7 @@ class RecModel(nn.Module):
         self.emb_in_size = embedding_dim * len(dataset.categorical_feature_sizes)
         print(f"Created embeddings for features: {dataset.categorical_features.columns.values}")
 
-    def get_feature_embeddings(self, batch: DatasetRow, concat=True):
+    def get_feature_embeddings(self, batch: DatasetRow, concat=True) -> Tensor:
         embeddings = []
         for i, feature_name in enumerate(self.categorical_feature_names):
             emb = self.emb_dict[feature_name]
@@ -86,30 +87,23 @@ class WideDeepModel(RecModel):
 
 
 class DeepFMModel(RecModel):
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         self.fc_layers = nn.ModuleList()
         layers = [64, 32, 16, 8]
 
-        for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
-            self.fc_layers.append(nn.Linear(in_size, out_size))
-            self.fc_layers.append(nn.ReLU())
-            self.fc_layers.append(nn.Dropout(0.1))
-
-        self.fc_layers = nn.Sequential(*self.fc_layers)
-        self.output_layer = nn.Linear(layers[-1], 1)
+        self.fc_layers = self.create_linear_tower(layers)
 
     def forward(self, batch):
-        emb_cat = self.get_feature_embeddings(batch)
+        emb_cat = self.get_feature_embeddings(batch, concat=False)
         x = self.fc_layers(emb_cat)
         x = x + get_fm_loss(emb_cat)
-        x = self.output_layer(x)
-        x = torch.sigmoid(x)
         return x
 
 
-def get_fm_loss(emb_cat: torch.Tensor):
-    square_of_sum = torch.pow(torch.sum(emb_cat, dim=1, keepdim=True), 2)
-    sum_of_square = torch.sum(emb_cat * emb_cat, dim=1, keepdim=True)
+def get_fm_loss(embeddings: torch.Tensor):
+    square_of_sum = torch.pow(torch.sum(embeddings, dim=1, keepdim=True), 2)
+    sum_of_square = torch.sum(embeddings * embeddings, dim=1, keepdim=True)
     cross_term = square_of_sum - sum_of_square
     cross_term = 0.5 * torch.sum(cross_term, dim=2, keepdim=False)
 

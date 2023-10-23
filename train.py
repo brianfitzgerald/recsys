@@ -37,15 +37,15 @@ class SchedulerOption(IntEnum):
     COSINE = 3
 
 class Params:
-    learning_rate: float = 5e-4
+    learning_rate: float = 1e-3
     weight_decay: float = 1e-5
 
     embedding_dim: int = 8
     dropout: float = 0
-    batch_size: int = 128
+    batch_size: int = 512
     eval_size: int = 100
     max_rows: Optional[int] = None
-    model_architecture: ModelArchitecture = ModelArchitecture.NEURAL_CF
+    model_architecture: ModelArchitecture = ModelArchitecture.DEEP_FM
     dataset_source: DatasetSource = DatasetSource.CRITEO
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
