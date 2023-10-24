@@ -42,19 +42,19 @@ class Params:
 
     embedding_dim: int = 8
     dropout: float = 0
-    batch_size: int = 512
+    batch_size: int = 256
     eval_size: int = 100
+    num_epochs: int = 500
     max_rows: Optional[int] = None
-    model_architecture: ModelArchitecture = ModelArchitecture.DEEP_FM
+    model_architecture: ModelArchitecture = ModelArchitecture.MATRIX_FACTORIZATION
     dataset_source: DatasetSource = DatasetSource.CRITEO
     rating_format: RatingFormat = RatingFormat.BINARY
     max_users: Optional[int] = None
-    num_epochs: int = 200
     scheduler: SchedulerOption = SchedulerOption.COSINE
 
     do_eval: bool = False
     eval_every: int = 1
-    max_batches: Optional[int] = 20
+    max_batches: Optional[int] = None
 
     @classmethod
     def default_values(cls):
