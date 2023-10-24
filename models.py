@@ -64,6 +64,7 @@ class RecModel(nn.Module):
         layers.insert(0, self.emb_in_size)
         for _, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
             all_layers.append(nn.Linear(in_size, out_size))
+            all_layers.append(nn.BatchNorm1d(out_size))
             all_layers.append(nn.ReLU())
             # all_layers.append(nn.Dropout(0.1))
         return nn.Sequential(*all_layers)
@@ -85,29 +86,32 @@ class WideDeepModel(RecModel):
         x = torch.sigmoid(x)
         return x
 
+def get_fm_loss(embeddings: torch.Tensor):
+    square_of_sum = torch.sum(embeddings, dim=1) ** 2
+    sum_of_square = torch.sum(embeddings ** 2, dim=1)
+    cross_term = square_of_sum - sum_of_square
+    cross_term = 0.5 * torch.sum(cross_term, dim=1)
+    return cross_term
+
 
 class DeepFMModel(RecModel):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.fc_layers = nn.ModuleList()
-        layers = [64, 32, 16, 8]
 
+        layers = [64, 32, 16, 8, 1]
+
+        # used to compute the FM loss
         self.fc_layers = self.create_linear_tower(layers)
+        self.lin = nn.Linear(self.emb_in_size, 1)
 
     def forward(self, batch):
-        emb_cat = self.get_feature_embeddings(batch, concat=False)
-        x = self.fc_layers(emb_cat)
-        x = x + get_fm_loss(emb_cat)
-        return x
-
-
-def get_fm_loss(embeddings: torch.Tensor):
-    square_of_sum = torch.pow(torch.sum(embeddings, dim=1, keepdim=True), 2)
-    sum_of_square = torch.sum(embeddings * embeddings, dim=1, keepdim=True)
-    cross_term = square_of_sum - sum_of_square
-    cross_term = 0.5 * torch.sum(cross_term, dim=2, keepdim=False)
-
-    return cross_term
+        emb = self.get_feature_embeddings(batch, concat=False)
+        emb_concat = emb.view(-1, self.emb_in_size)
+        fm_loss = get_fm_loss(emb)
+        fc_loss = self.fc_layers(emb_concat).squeeze()
+        lin_loss = self.lin(emb_concat).squeeze()
+        loss = lin_loss + fc_loss + fm_loss
+        return loss
 
 
 class MatrixFactorizationModel(RecModel):
